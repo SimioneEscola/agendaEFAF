@@ -1706,5 +1706,203 @@ if (document.readyState === 'loading') {
 }
 
 </script>
+
+<!-- ═══════════════════════════════════════════════════════
+     PAINEL DE ATIVIDADES (arrastar ou clicar p/ inserir)
+     ═══════════════════════════════════════════════════════ -->
+<style>
+  #actToggle{position:fixed;right:0;top:50%;z-index:450;background:var(--azul);color:#fff;border:none;border-radius:10px 0 0 10px;padding:14px 8px;cursor:pointer;font-family:'Sora',sans-serif;font-size:.66rem;font-weight:800;letter-spacing:.12em;text-transform:uppercase;writing-mode:vertical-rl;box-shadow:-3px 0 12px rgba(0,0,0,.18);transition:background .15s}
+  #actToggle:hover{background:var(--azul-escuro)}
+  #actPanel{position:fixed;right:0;top:0;bottom:0;width:320px;z-index:440;background:var(--panel);border-left:1.5px solid var(--border2);box-shadow:-6px 0 24px rgba(0,0,0,.13);display:flex;flex-direction:column;transform:translateX(100%);transition:transform .28s cubic-bezier(.23,1,.32,1);font-family:'Sora',sans-serif}
+  #actPanel.open{transform:translateX(0)}
+  .act-head{background:var(--azul-escuro);color:#fff;padding:14px 16px;display:flex;align-items:center;justify-content:space-between;gap:8px}
+  .act-head-title{font-size:.72rem;font-weight:800;letter-spacing:.08em;text-transform:uppercase;line-height:1.2}
+  .act-head-sub{font-size:.58rem;color:rgba(255,255,255,.65);letter-spacing:.04em;margin-top:2px}
+  .act-close{background:none;border:1px solid rgba(255,255,255,.3);color:#fff;width:26px;height:26px;border-radius:5px;cursor:pointer;font-size:1rem;line-height:1;display:flex;align-items:center;justify-content:center}
+  .act-close:hover{background:rgba(255,255,255,.15)}
+  .act-search{padding:10px 12px;background:var(--panel2);border-bottom:1px solid var(--border)}
+  .act-search input{width:100%;padding:7px 10px;border:1.5px solid var(--border2);border-radius:6px;font-family:'Sora',sans-serif;font-size:.74rem;outline:none;background:#fff}
+  .act-search input:focus{border-color:var(--azul);box-shadow:0 0 0 3px rgba(0,112,192,.1)}
+  .act-hint{font-size:.6rem;color:var(--muted);padding:6px 12px 0;letter-spacing:.02em;line-height:1.4}
+  .act-list{flex:1;overflow-y:auto;padding:8px 10px 16px}
+  .act-list::-webkit-scrollbar{width:6px}
+  .act-list::-webkit-scrollbar-thumb{background:var(--border2);border-radius:3px}
+  .act-group{margin-top:10px}
+  .act-group-title{font-size:.6rem;font-weight:800;color:var(--azul-escuro);letter-spacing:.08em;text-transform:uppercase;padding:6px 6px 4px;border-bottom:1px dashed var(--border)}
+  .act-item{display:flex;align-items:center;gap:6px;background:#f3f7fb;border:1px solid #d8e6f1;color:var(--azul-escuro);font-size:.7rem;font-weight:600;padding:6px 8px;margin:4px 0;border-radius:6px;cursor:grab;transition:all .12s;line-height:1.25;user-select:none}
+  .act-item:hover{background:var(--azul-claro);color:#fff;border-color:var(--azul);transform:translateX(-2px)}
+  .act-item:active{cursor:grabbing}
+  .act-item::before{content:"⋮⋮";font-size:.7rem;opacity:.5;flex-shrink:0}
+  .act-item.hidden{display:none}
+  .ed-cell.drop-target{background:#fff3b8 !important;box-shadow:inset 0 0 0 2px var(--azul) !important}
+  .ed-cell.last-focused{box-shadow:inset 0 0 0 1.5px var(--azul-claro)}
+  @media print{#actToggle,#actPanel{display:none!important}}
+  @media(max-width:900px){#actPanel{width:88vw}}
+</style>
+
+<button id="actToggle" type="button" onclick="toggleActPanel()" title="Abrir/fechar atividades">Atividades ▸</button>
+
+<aside id="actPanel" aria-label="Atividades para inclusão na agenda">
+  <div class="act-head">
+    <div>
+      <div class="act-head-title">Atividades</div>
+      <div class="act-head-sub">Arraste até a célula ou clique p/ inserir</div>
+    </div>
+    <button class="act-close" type="button" onclick="toggleActPanel()" title="Fechar">×</button>
+  </div>
+  <div class="act-search">
+    <input type="text" id="actSearch" placeholder="🔍 Filtrar atividade..." oninput="filterActs()"/>
+  </div>
+  <div class="act-hint">Dica: clique numa célula para selecioná-la, depois clique numa atividade para inserir. Ou arraste a atividade direto até a célula.</div>
+  <div class="act-list" id="actList"></div>
+</aside>
+
+<script>
+(function(){
+  const GRUPOS = [
+    ["Tutoria & Projeto de Vida", [
+      "Tutoria individual","Tutoria coletiva","Registro de tutoria (metas e acompanhamento)",
+      "Desenvolvimento de Projeto de Vida","Pedagogia da presença",
+      "Acompanhamento do desenvolvimento do Projeto de Vida dos alunos"
+    ]],
+    ["Atendimento a Estudantes", [
+      "Atendimento individual a estudante",
+      "Atendimento a estudantes com dificuldade de aprendizagem",
+      "Atendimento a estudantes com altas habilidades",
+      "Feedback de desempenho ao estudante","Mediação de conflitos","Ação de busca ativa"
+    ]],
+    ["Atendimento a Famílias", [
+      "Participação em reunião com responsáveis","Atendimento individual a responsáveis",
+      "Registro de atendimento à família"
+    ]],
+    ["Pedagógico — Planejamento", [
+      "Correção e análise de atividades","ATPCG (formação, estudo, planejamento)","ATPCA",
+      "Estudo do currículo priorizado","Preparação de materiais pedagógicos",
+      "Organização de instrumentos avaliativos","Elaboração de intervenções pedagógicas",
+      "Recuperação contínua","Organização de agrupamentos produtivos",
+      "Planejamento de estratégias diferenciadas","Organização da rotina semanal de trabalho",
+      "Revisão das metas pedagógicas da turma","Participação em ações interdisciplinares",
+      "Articulação com outros professores da turma"
+    ]],
+    ["Avaliação & Dados", [
+      "Análise de avaliações internas","Análise de resultados da Prova Paulista",
+      "Análise de dados Prova Paulista","Preparação de relatórios pedagógicos",
+      "Registro de evidências de aprendizagem","Organização de portfólio ou documentação dos alunos"
+    ]],
+    ["Conselhos & Reuniões", [
+      "Participação em Conselho de Classe","Preparação para Conselho de Classe",
+      "Participação Conselho de Escola","Participação Reunião APM",
+      "Alinhamento Coordenação","Alinhamento Gestão",
+      "Alinhamento com coordenação pedagógica","Recebimento de feedback formativo da gestão"
+    ]],
+    ["Rotina Escolar & Eventos", [
+      "Acompanhamento de estudantes em espaços comuns",
+      "Apoio à rotina escolar (entrada, intervalo, saída)",
+      "Participação em ações de acolhimento","Participação em eventos escolares",
+      "Organização ou apoio a projetos escolares"
+    ]],
+    ["Protagonismo Juvenil", [
+      "Acompanhamento de Clube Juvenil","Incentivo ao protagonismo juvenil",
+      "Orientação de liderança de turma"
+    ]],
+    ["Registros nas Plataformas", [
+      "Atualização de registros Sala do Futuro","Atualização de registros Portal Sim PEI"
+    ]],
+    ["Formação & Desenvolvimento", [
+      "Participação em formação URE","Participação em Multiplica",
+      "Participação em Escola de Gestão","Leitura e estudo de materiais pedagógicos",
+      "Pesquisa para aprimoramento da prática docente","Autoavaliação da prática docente"
+    ]]
+  ];
+
+  let lastFocusedCell = null;
+
+  function buildList(){
+    const root = document.getElementById('actList');
+    root.innerHTML = '';
+    GRUPOS.forEach(([title, items])=>{
+      const g = document.createElement('div'); g.className='act-group';
+      const h = document.createElement('div'); h.className='act-group-title'; h.textContent=title;
+      g.appendChild(h);
+      items.forEach(label=>{
+        const it = document.createElement('div');
+        it.className='act-item'; it.draggable=true; it.textContent=label;
+        it.dataset.label=label;
+        it.addEventListener('dragstart', e=>{
+          e.dataTransfer.setData('text/plain', label);
+          e.dataTransfer.effectAllowed='copy';
+        });
+        it.addEventListener('click', ()=>insertIntoCell(lastFocusedCell, label));
+        g.appendChild(it);
+      });
+      root.appendChild(g);
+    });
+  }
+
+  function insertIntoCell(cell, label){
+    if(!cell){
+      alert('Clique primeiro em uma célula da agenda para selecioná-la.');
+      return;
+    }
+    const cur = (cell.textContent||'').trim();
+    cell.textContent = cur ? (cur + ' / ' + label) : label;
+    cell.dispatchEvent(new Event('input', {bubbles:true}));
+    cell.dispatchEvent(new Event('blur', {bubbles:true}));
+    cell.classList.add('last-focused');
+  }
+
+  function bindCellEvents(){
+    document.body.addEventListener('focusin', e=>{
+      if(e.target.classList && e.target.classList.contains('ed-cell')){
+        if(lastFocusedCell && lastFocusedCell!==e.target) lastFocusedCell.classList.remove('last-focused');
+        lastFocusedCell = e.target;
+        lastFocusedCell.classList.add('last-focused');
+      }
+    });
+    document.body.addEventListener('click', e=>{
+      const c = e.target.closest && e.target.closest('.ed-cell');
+      if(c){
+        if(lastFocusedCell && lastFocusedCell!==c) lastFocusedCell.classList.remove('last-focused');
+        lastFocusedCell = c; c.classList.add('last-focused');
+      }
+    });
+    document.body.addEventListener('dragover', e=>{
+      const c = e.target.closest && e.target.closest('.ed-cell');
+      if(c){ e.preventDefault(); e.dataTransfer.dropEffect='copy'; c.classList.add('drop-target'); }
+    });
+    document.body.addEventListener('dragleave', e=>{
+      const c = e.target.closest && e.target.closest('.ed-cell');
+      if(c) c.classList.remove('drop-target');
+    });
+    document.body.addEventListener('drop', e=>{
+      const c = e.target.closest && e.target.closest('.ed-cell');
+      if(c){
+        e.preventDefault();
+        c.classList.remove('drop-target');
+        const txt = e.dataTransfer.getData('text/plain');
+        if(txt) insertIntoCell(c, txt);
+      }
+    });
+  }
+
+  window.toggleActPanel = function(){
+    document.getElementById('actPanel').classList.toggle('open');
+  };
+  window.filterActs = function(){
+    const q = (document.getElementById('actSearch').value||'').toLowerCase().trim();
+    document.querySelectorAll('#actList .act-item').forEach(it=>{
+      it.classList.toggle('hidden', !!q && !it.dataset.label.toLowerCase().includes(q));
+    });
+    document.querySelectorAll('#actList .act-group').forEach(g=>{
+      const any = g.querySelectorAll('.act-item:not(.hidden)').length;
+      g.style.display = any ? '' : 'none';
+    });
+  };
+
+  function init(){ buildList(); bindCellEvents(); }
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded', init);
+  else init();
+})();
+</script>
 </body>
 </html>
