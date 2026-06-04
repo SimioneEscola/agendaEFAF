@@ -178,6 +178,16 @@ body{font-family:'Sora',sans-serif;background:var(--bg);color:var(--text);min-he
 .btn-logout:hover{border-color:#e74c3c;color:#e74c3c}
 .user-bar{background:#0a3d62;padding:7px 20px;display:flex;align-items:center;gap:10px;font-size:.68rem;color:rgba(255,255,255,.85)}
 .user-bar.hidden{display:none}
+
+.ed-cell.fixed-aula{background:#eef6ff;color:#0b3d6b;font-weight:600}
+.ed-cell.replicated-aula{background:#fff8e1}
+.ed-cell.fixed-aula:focus,.ed-cell.replicated-aula:focus{background:#fff}
+.replicate-actions{display:inline-flex;gap:6px;margin-left:8px}
+.btn-rep{background:#fff;border:1.5px solid var(--azul-claro);color:var(--azul-escuro);font-family:'Sora',sans-serif;font-size:0.66rem;font-weight:700;padding:5px 10px;border-radius:6px;cursor:pointer;text-transform:uppercase;letter-spacing:.05em;transition:all .15s}
+.btn-rep:hover{background:var(--azul-claro);color:#fff}
+.btn-rep.btn-rep-restore{border-color:#c47a1a;color:#c47a1a}
+.btn-rep.btn-rep-restore:hover{background:#c47a1a;color:#fff}
+
 </style>
 </head>
 <body>
@@ -267,6 +277,7 @@ body{font-family:'Sora',sans-serif;background:var(--bg);color:var(--text);min-he
   </div>
   <div class="topbar-actions">
     <span class="cloud-status cs-idle" id="cloudStatus">☁️ Firebase</span>
+    <span class="replicate-actions"><button class="btn-rep" type="button" onclick="replicarSemana()" title="Replicar a última célula clicada em todas as semanas do mês atual (mesmo dia da semana e horário)">🔁 Replicar Semana</button><button class="btn-rep" type="button" onclick="replicarMes()" title="Replicar a última célula clicada em todos os meses (mesmo dia da semana e horário)">🔁 Replicar Mês</button><button class="btn-rep btn-rep-restore" type="button" onclick="restaurarHorarioFixo()" title="Reaplicar o horário fixo de aulas do professor (sobrescreve as células de aula)">↺ Horário Fixo</button></span>
     <button class="btn btn-save" onclick="cloudSave(this)">☁️ Salvar</button>
   </div>
 </div>
@@ -1570,6 +1581,130 @@ document.addEventListener('DOMContentLoaded', () => {
   const pwd = document.getElementById('loginPassword');
   if (pwd) pwd.addEventListener('keydown', e => { if(e.key==='Enter') doLogin(); });
 });
+
+
+// ══════════════════════════════════════════════════════════════════
+//  HORÁRIO FIXO + REPLICAR (semana/mês)
+// ══════════════════════════════════════════════════════════════════
+window.TEACHER_SCHEDULE = {"Gilson Santos Silva": {"1": {"0": "6°A · Red. e Leit.", "1": "6°A · Red. e Leit.", "4": "6°C · L. Port.", "5": "6°C · L. Port.", "7": "6°A · Eletiva", "8": "6°A · Eletiva"}, "2": {"2": "8°B · O.E.", "4": "6°B · Red. e Leit.", "5": "6°B · Red. e Leit.", "7": "6°C · L. Port.", "8": "6°C · L. Port."}, "3": {"0": "6°C · O.E.", "1": "6°C · O.E.", "2": "7°B · O.E.", "4": "6°B · L. Port.", "5": "6°B · L. Port.", "6": "8°C · Red. e Leit.", "8": "8°C · Red. e Leit."}, "4": {"0": "6°B · L. Port.", "1": "6°B · L. Port.", "2": "8°A · O.E.", "7": "7°A · Red. e Leit.", "8": "7°A · Red. e Leit."}, "5": {"0": "6°C · Red. e Leit.", "1": "6°C · Red. e Leit.", "4": "6°B · O.E.", "5": "6°B · O.E."}}, "Andrea Brandao Braga": {"1": {"0": "6°B · Ciências", "1": "6°B · Ciências", "2": "6°A · Ciências", "7": "6°B · Eletiva", "8": "6°B · Eletiva"}, "2": {"0": "6°A · Ciências", "1": "6°A · Ciências", "5": "6°C · Ciências", "7": "7°A · Ciências", "8": "7°A · Ciências"}, "3": {"0": "7°B · Ciências", "1": "7°B · Ciências", "4": "6°C · Tec", "5": "6°C · Tec"}, "4": {"4": "6°B · Tec", "5": "6°B · Tec", "7": "6°C · Ciências", "8": "6°C · Ciências"}, "5": {"0": "6°B · Ciências", "1": "7°A · Ciências", "2": "7°B · Ciências", "7": "6°A · Tec", "8": "6°A · Tec"}}, "Efigenia Do Rosario Araujo": {"1": {"0": "6°C · Mat", "1": "6°C · Mat", "2": "6°B · Mat", "7": "6°C · Eletiva", "8": "6°C · Eletiva"}, "2": {"0": "6°B · Mat", "1": "6°B · Mat", "2": "7°B · O.E.", "4": "6°C · Mat", "5": "6°A · Mat"}, "3": {"0": "6°A · Mat", "1": "6°A · Mat", "2": "6°B · Mat", "4": "7°B · Ed. Fin.", "5": "7°B · Ed. Fin.", "7": "6°C · Mat", "8": "6°C · Mat"}, "4": {"0": "6°A · Mat", "1": "6°A · Mat", "2": "6°C · O.E.", "4": "6°C · O.E.", "5": "7°A · O.E.", "7": "6°B · Mat"}, "5": {"0": "6°A · O.E.", "1": "6°A · O.E.", "4": "7°A · Ed. Fin.", "5": "7°A · Ed. Fin.", "7": "6°B · O.E.", "8": "6°B · O.E."}}, "Livia Cristiane Alves Pereira": {"1": {"0": "7°A · L. Port.", "1": "7°A · L. Port.", "2": "8°A · L. Port.", "4": "7°B · L. Port.", "5": "7°B · L. Port.", "6": "8°A · Eletiva", "8": "8°A · Eletiva"}, "2": {"0": "8°B · L. Port.", "1": "8°B · L. Port.", "2": "8°A · L. Port.", "4": "8°C · L. Port.", "5": "8°C · L. Port."}, "3": {"0": "7°A · L. Port.", "1": "7°A · L. Port.", "6": "8°A · L. Port.", "8": "8°A · L. Port."}, "4": {"0": "8°A · Red e Leit.", "1": "8°A · Red e Leit.", "4": "8°B · Red e Leit.", "5": "8°B · Red e Leit.", "7": "7°B · L. Port.", "8": "7°B · L. Port."}, "5": {"0": "7°A · O.E.", "4": "8°B · L. Port.", "5": "8°B · L. Port.", "6": "8°C · L. Port.", "8": "8°C · L. Port."}}, "Santana Alves De Macedo": {"1": {"0": "7°B · Geo", "2": "6°C · Geo", "4": "7°A · Geo", "5": "7°A · Geo", "6": "8°C · Eletiva", "8": "8°C · Eletiva"}, "2": {"0": "6°C · P.V.", "1": "7°A · P.V.", "2": "6°B · Geo"}, "3": {"2": "7°A · Geo", "4": "6°A · Geo", "5": "6°A · Geo", "7": "6°B · Geo", "8": "6°B · Geo"}, "4": {"2": "6°B · P.V.", "5": "7°B · Geo", "7": "6°A · P.V.", "8": "6°A · Geo"}, "5": {"0": "7°B · Geo", "2": "6°C · Geo", "4": "6°C · Geo"}}, "Rita De Cassia Franca": {"1": {"0": "8°A · Mat", "1": "8°A · Mat", "2": "7°B · Mat", "4": "8°B · Mat", "5": "8°B · Mat", "7": "7°B · Eletiva", "8": "7°B · Eletiva"}, "2": {"0": "7°A · Mat", "1": "8°C · Mat", "2": "8°C · Mat", "4": "7°B · Mat", "5": "7°B · Mat", "6": "8°B · Mat", "8": "8°B · Mat"}, "3": {"0": "8°B · Mat", "1": "8°C · Mat", "2": "8°C · Mat", "4": "7°A · Mat", "5": "7°A · Mat", "7": "7°B · Mat", "8": "7°B · Mat"}, "4": {"2": "8°C · Mat", "4": "8°A · Mat", "5": "8°A · Mat"}, "5": {"4": "8°A · Mat", "7": "7°A · Mat", "8": "7°A · Mat"}}, "Wallace Viana Evangelista": {"1": {"0": "8°B · Ciências", "1": "8°B · Ciências", "4": "8°A · Ciências", "5": "8°A · Ciências", "6": "8°B · Eletiva", "8": "8°B · Eletiva"}, "2": {"0": "9°A · Tec", "1": "9°A · Tec", "4": "8°A · Ciências", "5": "8°A · Ciências", "6": "9°B · Ciências", "8": "9°B · Ciências"}, "3": {"1": "8°B · Ciências", "2": "8°B · Ciências", "4": "8°C · Ciências", "5": "8°C · Ciências"}, "4": {"0": "8°C · Ciências", "1": "8°C · Ciências", "4": "9°A · Ciências", "5": "9°A · Ciências", "6": "9°B · Ciências", "8": "9°B · Ciências"}, "5": {"1": "8°C · Tec", "2": "8°C · Tec", "4": "9°A · Ciências", "5": "9°A · Ciências", "6": "9°B · Tec", "8": "9°B · Tec"}}, "Helio Da Silva": {"1": {"0": "8°C · Hist", "1": "8°C · Hist", "2": "9°B · Hist"}, "2": {"2": "9°B · Hist", "4": "8°B · Hist", "5": "8°B · Hist"}, "3": {"0": "8°A · Hist", "1": "8°A · Hist", "2": "6°C · Hist", "5": "9°A · Hist", "7": "6°A · Hist", "8": "6°A · Hist"}, "4": {"0": "9°A · Hist", "1": "9°A · Hist", "2": "9°B · Hist", "4": "8°C · Hist", "5": "6°A · Hist", "8": "6°B · Hist"}, "5": {"0": "8°B · Hist", "1": "6°B · Hist", "2": "6°B · Hist", "5": "8°A · Hist", "7": "6°C · Hist", "8": "6°C · Hist"}}, "Eliana Macedo Da Mota Castro": {"1": {"0": "9°A · L. Port.", "1": "9°A · L. Port.", "4": "9°B · O.E.", "5": "9°B · O.E.", "6": "9°B · Eletiva", "8": "9°B · Eletiva"}, "2": {"0": "9°B · L. Port.", "1": "9°B · L. Port.", "2": "6°A · L. Port.", "4": "6°A · L. Port.", "6": "9°A · O.E.", "8": "9°A · O.E."}, "3": {"0": "9°A · L. Port.", "1": "9°A · L. Port.", "2": "6°A · O.E."}, "4": {"0": "9°B · L. Port.", "1": "9°B · L. Port.", "2": "6°A · L. Port.", "4": "6°A · L. Port.", "8": "8°C · O.E."}, "5": {"0": "9°B · Red e Leit.", "1": "9°B · Red e Leit.", "2": "6°A · O.E.", "4": "7°B · Red e Leit.", "5": "7°B · Red e Leit.", "6": "9°A · Red e Leit.", "8": "9°A · Red e Leit."}}, "Sueli Maria Dos Santos Anjos": {"1": {"0": "9°B · Ing", "1": "9°B · Ing", "2": "7°A · Ing", "4": "8°C · Ing", "5": "8°C · Ing"}, "2": {"0": "7°B · Ing", "1": "7°B · Ing", "7": "6°A · Ing", "8": "6°A · Ing"}, "3": {"0": "6°B · Ing", "1": "6°B · Ing", "4": "8°A · Ing", "5": "8°A · Ing", "6": "9°A · Ing", "8": "9°A · Ing"}, "4": {"0": "6°C · Ing", "1": "6°C · Ing"}, "5": {"2": "7°A · Ing", "6": "8°B · Ing", "8": "8°B · Ing"}}, "Luci Mary Venancio De Andrade Ligasacchi": {"1": {"1": "7°B · Arte", "2": "8°B · Arte", "4": "6°A · Arte", "5": "6°A · Arte"}, "2": {"7": "6°B · Arte", "8": "6°B · Arte"}, "3": {"6": "9°B · P.V.", "8": "9°B · Arte"}, "4": {"0": "7°A · Arte", "1": "7°A · Arte", "2": "9°A · Arte", "4": "7°B · Arte", "5": "6°C · Arte", "6": "8°C · P.V."}, "5": {"0": "8°C · Arte", "1": "8°B · P.V.", "2": "9°A · P.V.", "5": "6°C · Arte", "6": "8°A · Arte", "8": "8°A · P.V."}}, "Silvia Cirlene Pultrini": {"1": {"2": "8°C · O.E.", "4": "9°A · Mat", "5": "9°A · Mat", "6": "9°A · Eletiva", "8": "9°A · Eletiva"}, "2": {"2": "9°A · Mat", "4": "9°B · Mat", "5": "9°B · Mat", "6": "8°A · Ed. Fin.", "8": "8°A · Ed. Fin."}, "3": {"2": "8°A · O.E.", "4": "9°B · O.E.", "5": "9°B · O.E.", "6": "8°B · Ed. Fin.", "8": "8°B · Ed. Fin."}, "4": {"2": "8°B · O.E.", "4": "9°B · Mat", "5": "9°B · Mat", "6": "9°A · O.E.", "8": "9°A · O.E."}, "5": {"0": "9°A · Mat", "1": "9°A · Mat", "2": "9°B · Mat", "4": "8°C · Ed. Fin.", "5": "8°C · Ed. Fin."}}, "Carlos Pereira De Souza": {"1": {"2": "9°A · Ed. Fis", "4": "6°B · Ed. Fis", "5": "6°B · Ed. Fis", "7": "7°A · Eletiva", "8": "7°A · Eletiva"}, "2": {"0": "8°C · Ed. Fis", "1": "6°C · Ed. Fis", "2": "6°C · Ed. Fis", "4": "7°A · Ed. Fis", "5": "7°A · Ed. Fis", "7": "7°B · Ed. Fis", "8": "7°B · Ed. Fis"}, "3": {"0": "8°C · Ed. Fis", "1": "9°B · Ed. Fis", "2": "9°B · Ed. Fis", "4": "9°A · Ed. Fis"}, "4": {"0": "7°B · Tec", "1": "7°B · Tec", "2": "7°A · Tec", "4": "7°A · Tec", "6": "8°B · Ed. Fis", "8": "8°B · Ed. Fis"}, "5": {"1": "8°A · Ed. Fis", "2": "8°A · Ed. Fis", "4": "6°A · Ed. Fis", "5": "6°A · Ed. Fis"}}, "Ana Paula Dos Santos": {"2": {"0": "8°A · Geo", "1": "8°A · Geo", "2": "7°A · Hist", "4": "9°A · Geo", "5": "9°A · Geo", "6": "8°C · Geo", "8": "8°C · Geo"}, "3": {"0": "9°B · Geo", "2": "9°A · Geo", "4": "8°B · Tec", "5": "8°B · Tec", "7": "7°A · Hist", "8": "7°A · Hist"}, "4": {"0": "8°B · Geo", "1": "8°B · Geo", "2": "7°B · Hist", "5": "8°C · Geo", "6": "8°A · Tec", "8": "8°A · Tec"}, "5": {"0": "8°A · Geo", "1": "7°B · P.V.", "2": "8°B · Geo", "4": "9°B · Geo", "5": "9°B · Geo", "7": "7°B · Hist", "8": "7°B · Hist"}}};
+
+// Marca cada célula editável com um id estável: cell_<MES>_<SEMANA>_<LINHA>_<DIA>
+window.assignStableCellIds = function() {
+  document.querySelectorAll('.month-panel').forEach(panel => {
+    const monthId = (panel.id || '').replace('month-','');
+    const weeks = panel.querySelectorAll('.week-block');
+    weeks.forEach((wb, wi) => {
+      const rows = wb.querySelectorAll('table.agenda-table tbody tr');
+      rows.forEach((tr, ri) => {
+        const tds = tr.querySelectorAll('td');
+        // td[0] = horário; td[1..5] = dias seg..sex
+        for (let d = 1; d <= 5; d++) {
+          const td = tds[d];
+          if (!td) continue;
+          const ed = td.querySelector('.ed-cell[contenteditable="true"]');
+          if (ed) {
+            ed.dataset.idx = 'c_' + monthId + '_w' + wi + '_r' + ri + '_d' + (d-1);
+            ed.dataset.month = monthId;
+            ed.dataset.week  = String(wi);
+            ed.dataset.row   = String(ri);
+            ed.dataset.day   = String(d-1); // 0..4  (seg..sex)
+          }
+        }
+      });
+    });
+  });
+};
+
+// Aplica horário fixo do professor em todas as células ainda vazias.
+window.applyFixedSchedule = function(teacherName, opts) {
+  opts = opts || {};
+  const force = !!opts.force;
+  const sched = window.TEACHER_SCHEDULE[teacherName];
+  if (!sched) return 0;
+  let count = 0;
+  document.querySelectorAll('.ed-cell[contenteditable="true"][data-idx]').forEach(ed => {
+    const day = parseInt(ed.dataset.day, 10);   // 0..4
+    const row = parseInt(ed.dataset.row, 10);
+    const wd  = String(day + 1);                // 1..5
+    const entry = sched[wd] && sched[wd][String(row)];
+    if (!entry) return;
+    const current = (ed.innerText || '').trim();
+    if (current && !force) return;
+    ed.innerText = entry;
+    ed.classList.add('fixed-aula');
+    count++;
+  });
+  return count;
+};
+
+// Última célula focada (para os botões "Replicar")
+window._lastFocusedCell = null;
+document.addEventListener('focusin', e => {
+  if (e.target.classList && e.target.classList.contains('ed-cell')) {
+    window._lastFocusedCell = e.target;
+  }
+});
+
+function _replicate(scope) {
+  const src = window._lastFocusedCell;
+  if (!src || !src.dataset.idx) {
+    alert('Clique primeiro na célula que deseja replicar.');
+    return;
+  }
+  const txt = (src.innerText || '').trim();
+  if (!txt) { alert('A célula está vazia. Digite algo antes de replicar.'); return; }
+  const row = src.dataset.row, day = src.dataset.day, month = src.dataset.month;
+  let sel;
+  if (scope === 'week') {
+    // Mesmo mês, mesmo dia da semana e mesma linha — todas as semanas
+    sel = `.ed-cell[data-month="${month}"][data-row="${row}"][data-day="${day}"]`;
+  } else {
+    // Todos os meses, mesmo dia/linha
+    sel = `.ed-cell[data-row="${row}"][data-day="${day}"]`;
+  }
+  let n = 0;
+  document.querySelectorAll(sel).forEach(c => {
+    if (c === src) return;
+    c.innerText = txt;
+    c.classList.add('replicated-aula');
+    n++;
+  });
+  if (window.scheduleAutoSave) window.scheduleAutoSave();
+  if (window.showHint) window.showHint();
+  const label = scope === 'week' ? 'semana (mês atual)' : 'todos os meses';
+  alert('Replicado em ' + n + ' célula(s) — ' + label + '.');
+}
+window.replicarSemana = function(){ _replicate('week'); };
+window.replicarMes    = function(){ _replicate('month'); };
+
+// Botão "Restaurar horário fixo" (re-aplica sobrescrevendo)
+window.restaurarHorarioFixo = function() {
+  const u = window.viewingUser || window.currentUser;
+  if (!u) return;
+  if (!confirm('Restaurar o horário fixo do professor ' + u + '?\n\nIsso vai sobrescrever as células de aulas fixas (seg–sex) em todos os meses. Anotações em outras células e horários não-fixos serão preservados.')) return;
+  const n = window.applyFixedSchedule(u, { force: true });
+  if (window.scheduleAutoSave) window.scheduleAutoSave();
+  alert('Horário fixo restaurado em ' + n + ' célula(s).');
+};
+
+// Re-aplica horário fixo logo após carregar os dados salvos (preenche o que estiver vazio).
+const _origFbLoad = window.fbLoad;
+if (_origFbLoad) {
+  window.fbLoad = async function(userName) {
+    await _origFbLoad(userName);
+    if (window.TEACHER_SCHEDULE[userName]) {
+      window.applyFixedSchedule(userName);
+    }
+  };
+}
+
+// Inicializa IDs estáveis assim que o DOM estiver pronto.
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', window.assignStableCellIds);
+} else {
+  window.assignStableCellIds();
+}
+
 </script>
 </body>
 </html>
