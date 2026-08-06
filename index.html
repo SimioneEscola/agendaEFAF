@@ -181,6 +181,9 @@ body{font-family:'Sora',sans-serif;background:var(--bg);color:var(--text);min-he
 
 .ed-cell.fixed-aula{background:#eef6ff;color:#0b3d6b;font-weight:600}
 .ed-cell.replicated-aula{background:#fff8e1}
+.ed-cell.break-cell{background:#f3f4f6!important;color:#9ca3af;cursor:default}
+.ed-cell.break-cell:focus{background:#f3f4f6!important;box-shadow:none}
+tr.row-break td.td-time, tr.row-break .td-time-dark{opacity:.95}
 .ed-cell.fixed-aula:focus,.ed-cell.replicated-aula:focus{background:#fff}
 .replicate-actions{display:inline-flex;gap:6px;margin-left:8px}
 .btn-rep{background:#fff;border:1.5px solid var(--azul-claro);color:var(--azul-escuro);font-family:'Sora',sans-serif;font-size:0.66rem;font-weight:700;padding:5px 10px;border-radius:6px;cursor:pointer;text-transform:uppercase;letter-spacing:.05em;transition:all .15s}
@@ -1647,69 +1650,185 @@ table.dtable tr:hover td{background:#f6faff}
 
 <script type="module">
 // ══════════════════════════════════════════════════════════════════
-//  FIREBASE REALTIME DATABASE — Agenda Simioni Manhã 2026
+//  SUPABASE — Agenda EE Prof. Luiz Simioni Sobrinho 2026
+//  Tabela: public.agenda
+//  Colunas esperadas: id, professor, cell_key, conteudo, updated_at
+//  UNIQUE (professor, cell_key)  +  RLS liberado para anon
 // ══════════════════════════════════════════════════════════════════
-import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
-import { getDatabase, ref, set, get, child }
-  from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
+import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm";
 
-const firebaseConfig = {
-  apiKey: "AIzaSyCp_Mi9uIxz_ebXisscTOXtctktCqUCkpc",
-  authDomain: "agendaefaf.firebaseapp.com",
-  databaseURL: "https://agendaefaf-default-rtdb.firebaseio.com",
-  projectId: "agendaefaf",
-  storageBucket: "agendaefaf.firebasestorage.app",
-  messagingSenderId: "104606748014",
-  appId: "1:104606748014:web:3170591aecaeb060fa457f"
-};
+const SUPABASE_URL = "https://shggcytvtyzbaqdmsbln.supabase.co";
+const SUPABASE_ANON_KEY = "sb_publishable_V50P1LM4skolasnrCC-vmQ_z2ZWyKax";
+const TABLE = "agenda";
 
-const app = initializeApp(firebaseConfig);
-const db  = getDatabase(app);
-window.fbDb=db; window.fbRef=ref; window.fbSet=set; window.fbGet=get;
+const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+  auth: { persistSession: false, autoRefreshToken: false }
+});
+window.supabase = sb;
+window.fbDb = sb;
+window.fbRef = (_db, path) => path;
 
-function fbPath(name) {
-  return 'agendas/' + name.replace(/[^a-zA-Z0-9]/g, '_') + '/dados';
+async function loadCellsMap(professor) {
+  const { data, error } = await sb
+    .from(TABLE)
+    .select("cell_key, conteudo")
+    .eq("professor", professor)
+    .neq("cell_key", "__planos__");
+  if (error) throw error;
+  const map = {};
+  (data || []).forEach(r => { if (r.cell_key) map[r.cell_key] = r.conteudo ?? ""; });
+  return map;
 }
 
+window.fbSet = async (path, value) => {
+  if (typeof path === "string" && path.startsWith("planos/")) {
+    return window.sbSavePlanos(path.slice(7), value);
+  }
+  return { error: null };
+};
+
+window.fbGet = async (path) => {
+  if (typeof path !== "string") return { exists: () => false, val: () => null };
+  if (path.startsWith("planos/")) {
+    const data = await window.sbLoadPlanos(path.slice(7));
+    return { exists: () => Array.isArray(data) && data.length > 0, val: () => data };
+  }
+  const am = /^agendas\/(.+)\/dados$/.exec(path);
+  if (am) {
+    let professor = am[1];
+    let map = {};
+    try {
+      map = await loadCellsMap(professor);
+      if (!Object.keys(map).length) {
+        const withSpaces = professor.replace(/_/g, " ");
+        if (withSpaces !== professor) {
+          map = await loadCellsMap(withSpaces);
+        }
+      }
+    } catch (e) { console.error("fbGet agendas", e); }
+    return { exists: () => Object.keys(map).length > 0, val: () => map };
+  }
+  return { exists: () => false, val: () => null };
+};
+
+/** Salva todas as células preenchidas do professor na tabela agenda */
 window.fbSave = async function(btn, userName) {
-  if (btn) { btn.textContent = '⏳...'; btn.disabled = true; }
-  window.setStatus('saving');
+  if (btn) { btn.textContent = "⏳..."; btn.disabled = true; }
+  if (window.setStatus) window.setStatus("saving");
   try {
-    await set(ref(db, fbPath(userName)), window.getData());
-    window.setStatus('saved');
-    if (btn) {
-      btn.textContent = '✅ Salvo!';
-      btn.disabled = false;
-      setTimeout(() => { btn.innerHTML = '☁️ Salvar'; }, 2400);
+    if (!userName) throw new Error("Sem professor logado");
+    const data = window.getData ? window.getData() : {};
+    const now = new Date().toISOString();
+    const rows = [];
+    for (const [key, val] of Object.entries(data || {})) {
+      if (val == null) continue;
+      const text = String(val).trim();
+      if (!text) continue;
+      if (key === "__planos__") continue;
+      rows.push({
+        professor: userName,
+        cell_key: key,
+        conteudo: text,
+        updated_at: now
+      });
     }
-  } catch(e) {
-    console.error('Firebase save error:', e);
-    window.setStatus(navigator.onLine ? 'error' : 'offline');
-    if (btn) {
-      btn.textContent = '❌ Erro';
-      btn.disabled = false;
-      setTimeout(() => { btn.innerHTML = '☁️ Salvar'; }, 3000);
+
+    // 1) apaga células antigas deste professor (exceto __planos__)
+    const { error: delErr } = await sb
+      .from(TABLE)
+      .delete()
+      .eq("professor", userName)
+      .neq("cell_key", "__planos__");
+    if (delErr) throw delErr;
+
+    // 2) insere as preenchidas (em lotes de 500)
+    if (rows.length) {
+      for (let i = 0; i < rows.length; i += 500) {
+        const chunk = rows.slice(i, i + 500);
+        const { error } = await sb.from(TABLE).insert(chunk);
+        if (error) throw error;
+      }
     }
+
+    if (window.setStatus) window.setStatus("saved");
+    if (btn) {
+      btn.textContent = "✅ Salvo!";
+      btn.disabled = false;
+      setTimeout(() => { btn.innerHTML = "☁️ Salvar"; }, 2400);
+    }
+  } catch (e) {
+    console.error("Supabase save error:", e);
+    if (window.setStatus) window.setStatus(navigator.onLine ? "error" : "offline");
+    if (btn) {
+      btn.textContent = "❌ Erro";
+      btn.disabled = false;
+      setTimeout(() => { btn.innerHTML = "☁️ Salvar"; }, 3000);
+    }
+    alert("Erro ao salvar no Supabase:\\n" + (e.message || e.details || JSON.stringify(e)));
   }
 };
 
+/** Carrega células do professor e aplica na grade */
 window.fbLoad = async function(userName) {
-  window.setStatus('loading');
+  if (window.setStatus) window.setStatus("loading");
   try {
-    const snap = await get(child(ref(db), fbPath(userName)));
-    if (snap.exists()) {
-      window.applyData(snap.val());
-      window.setStatus('loaded');
-    } else {
-      window.setStatus('empty');
+    if (!userName) {
+      if (window.setStatus) window.setStatus("empty");
+      return;
     }
-  } catch(e) {
-    console.error('Firebase load error:', e);
-    window.setStatus(navigator.onLine ? 'error' : 'offline');
+    const map = await loadCellsMap(userName);
+    if (Object.keys(map).length) {
+      if (window.applyData) window.applyData(map);
+      if (window.setStatus) window.setStatus("loaded");
+    } else {
+      if (window.setStatus) window.setStatus("empty");
+    }
+  } catch (e) {
+    console.error("Supabase load error:", e);
+    if (window.setStatus) window.setStatus(navigator.onLine ? "error" : "offline");
   }
 };
 
-document.dispatchEvent(new Event('firebaseReady'));
+/** Planos de aula — guardados na mesma tabela com cell_key = __planos__ */
+window.sbSavePlanos = async function(professor, planos) {
+  try {
+    const now = new Date().toISOString();
+    await sb.from(TABLE).delete().eq("professor", professor).eq("cell_key", "__planos__");
+    if (planos && planos.length) {
+      const { error } = await sb.from(TABLE).insert({
+        professor,
+        cell_key: "__planos__",
+        conteudo: JSON.stringify(planos),
+        updated_at: now
+      });
+      if (error) throw error;
+    }
+    return { error: null };
+  } catch (e) {
+    console.error("sbSavePlanos", e);
+    return { error: e };
+  }
+};
+
+window.sbLoadPlanos = async function(professor) {
+  try {
+    const { data, error } = await sb
+      .from(TABLE)
+      .select("conteudo")
+      .eq("professor", professor)
+      .eq("cell_key", "__planos__")
+      .maybeSingle();
+    if (error) throw error;
+    if (!data || !data.conteudo) return [];
+    const parsed = JSON.parse(data.conteudo);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (e) {
+    console.error("sbLoadPlanos", e);
+    return [];
+  }
+};
+
+document.dispatchEvent(new Event("firebaseReady"));
 </script>
 
 <script>
@@ -1761,7 +1880,7 @@ window.setStatus = function(state) {
     loading: ['⏳ Carregando...','cs-saving'],
     loaded:  ['✅ Carregado','cs-saved'],
     empty:   ['☁️ Sem dados','cs-idle'],
-    error:   ['❌ Erro Firebase','cs-error'],
+    error:   ['❌ Erro Supabase','cs-error'],
     dirty:   ['● Não salvo','cs-dirty'],
     offline: ['📶 Sem conexão','cs-error']
   };
@@ -1967,16 +2086,22 @@ document.addEventListener('DOMContentLoaded', () => {
 // ══════════════════════════════════════════════════════════════════
 //  HORÁRIO FIXO + REPLICAR (semana/mês)
 // ══════════════════════════════════════════════════════════════════
-window.TEACHER_SCHEDULE = {"Gilson Santos Silva": {"1": {"0": "6°A · Red. e Leit.", "1": "6°A · Red. e Leit.", "4": "6°C · L. Port.", "5": "6°C · L. Port.", "7": "6°A · Eletiva", "8": "6°A · Eletiva"}, "2": {"2": "8°B · O.E.", "4": "6°B · Red. e Leit.", "5": "6°B · Red. e Leit.", "7": "6°C · L. Port.", "8": "6°C · L. Port."}, "3": {"0": "6°C · O.E.", "1": "6°C · O.E.", "2": "7°B · O.E.", "4": "6°B · L. Port.", "5": "6°B · L. Port.", "6": "8°C · Red. e Leit.", "8": "8°C · Red. e Leit."}, "4": {"0": "6°B · L. Port.", "1": "6°B · L. Port.", "2": "8°A · O.E.", "7": "7°A · Red. e Leit.", "8": "7°A · Red. e Leit."}, "5": {"0": "6°C · Red. e Leit.", "1": "6°C · Red. e Leit.", "4": "6°B · O.E.", "5": "6°B · O.E."}}, "Andreia Brandao Braga": {"1": {"0": "6°B · Ciências", "1": "6°B · Ciências", "2": "6°A · Ciências", "7": "6°B · Eletiva", "8": "6°B · Eletiva"}, "2": {"0": "6°A · Ciências", "1": "6°A · Ciências", "5": "6°C · Ciências", "7": "7°A · Ciências", "8": "7°A · Ciências"}, "3": {"0": "7°B · Ciências", "1": "7°B · Ciências", "4": "6°C · Tec", "5": "6°C · Tec"}, "4": {"4": "6°B · Tec", "5": "6°B · Tec", "7": "6°C · Ciências", "8": "6°C · Ciências"}, "5": {"0": "6°B · Ciências", "1": "7°A · Ciências", "2": "7°B · Ciências", "7": "6°A · Tec", "8": "6°A · Tec"}}, "Efigenia Do Rosario Araujo": {"1": {"0": "6°C · Mat", "1": "6°C · Mat", "2": "6°B · Mat", "7": "6°C · Eletiva", "8": "6°C · Eletiva"}, "2": {"0": "6°B · Mat", "1": "6°B · Mat", "2": "7°B · O.E.", "4": "6°C · Mat", "5": "6°A · Mat"}, "3": {"0": "6°A · Mat", "1": "6°A · Mat", "2": "6°B · Mat", "4": "7°B · Ed. Fin.", "5": "7°B · Ed. Fin.", "7": "6°C · Mat", "8": "6°C · Mat"}, "4": {"0": "6°A · Mat", "1": "6°A · Mat", "2": "6°C · O.E.", "4": "6°C · O.E.", "5": "7°A · O.E.", "7": "6°B · Mat"}, "5": {"0": "6°A · O.E.", "1": "6°A · O.E.", "4": "7°A · Ed. Fin.", "5": "7°A · Ed. Fin.", "7": "6°B · O.E.", "8": "6°B · O.E."}}, "Livia Cristiane Alves Pereira": {"1": {"0": "7°A · L. Port.", "1": "7°A · L. Port.", "2": "8°A · L. Port.", "4": "7°B · L. Port.", "5": "7°B · L. Port.", "7": "8°A · Eletiva", "8": "8°A · Eletiva"}, "2": {"0": "8°B · L. Port.", "1": "8°B · L. Port.", "2": "8°A · L. Port.", "4": "8°C · L. Port.", "5": "8°C · L. Port."}, "3": {"0": "7°A · L. Port.", "1": "7°A · L. Port.", "6": "8°A · L. Port.", "8": "8°A · L. Port."}, "4": {"0": "8°A · Red e Leit.", "1": "8°A · Red e Leit.", "4": "8°B · Red e Leit.", "5": "8°B · Red e Leit.", "7": "7°B · L. Port.", "8": "7°B · L. Port."}, "5": {"0": "7°A · O.E.", "4": "8°B · L. Port.", "5": "8°B · L. Port.", "6": "8°C · L. Port.", "8": "8°C · L. Port."}}, "Santana Alves De Macedo": {"1": {"0": "7°B · Geo", "2": "6°C · Geo", "4": "7°A · Geo", "5": "7°A · Geo", "7": "8°C · Eletiva", "8": "8°C · Eletiva"}, "2": {"0": "6°C · P.V.", "1": "7°A · P.V.", "2": "6°B · Geo"}, "3": {"2": "7°A · Geo", "4": "6°A · Geo", "5": "6°A · Geo", "7": "6°B · Geo", "8": "6°B · Geo"}, "4": {"2": "6°B · P.V.", "5": "7°B · Geo", "7": "6°A · P.V.", "8": "6°A · Geo"}, "5": {"0": "7°B · Geo", "2": "6°C · Geo", "4": "6°C · Geo"}}, "Rita De Cassia Franca": {"1": {"0": "8°A · Mat", "1": "8°A · Mat", "2": "7°B · Mat", "4": "8°B · Mat", "5": "8°B · Mat", "7": "7°B · Eletiva", "8": "7°B · Eletiva"}, "2": {"0": "7°A · Mat", "1": "8°C · Mat", "2": "8°C · Mat", "4": "7°B · Mat", "5": "7°B · Mat", "6": "8°B · Mat", "8": "8°B · Mat"}, "3": {"0": "8°B · Mat", "1": "8°C · Mat", "2": "8°C · Mat", "4": "7°A · Mat", "5": "7°A · Mat", "7": "7°B · Mat", "8": "7°B · Mat"}, "4": {"2": "8°C · Mat", "4": "8°A · Mat", "5": "8°A · Mat"}, "5": {"4": "8°A · Mat", "7": "7°A · Mat", "8": "7°A · Mat"}}, "Wallace Viana Evangelista": {"1": {"0": "8°B · Ciências", "1": "8°B · Ciências", "4": "8°A · Ciências", "5": "8°A · Ciências", "7": "8°B · Eletiva", "8": "8°B · Eletiva"}, "2": {"0": "9°A · Tec", "1": "9°A · Tec", "4": "8°A · Ciências", "5": "8°A · Ciências", "6": "9°B · Ciências", "8": "9°B · Ciências"}, "3": {"1": "8°B · Ciências", "2": "8°B · Ciências", "4": "8°C · Ciências", "5": "8°C · Ciências"}, "4": {"0": "8°C · Ciências", "1": "8°C · Ciências", "4": "9°A · Ciências", "5": "9°A · Ciências", "6": "9°B · Ciências", "8": "9°B · Ciências"}, "5": {"1": "8°C · Tec", "2": "8°C · Tec", "4": "9°A · Ciências", "5": "9°A · Ciências", "6": "9°B · Tec", "8": "9°B · Tec"}}, "Helio Da Silva": {"1": {"0": "8°C · Hist", "1": "8°C · Hist", "2": "9°B · Hist"}, "2": {"2": "9°B · Hist", "4": "8°B · Hist", "5": "8°B · Hist"}, "3": {"0": "8°A · Hist", "1": "8°A · Hist", "2": "6°C · Hist", "5": "9°A · Hist", "7": "6°A · Hist", "8": "6°A · Hist"}, "4": {"0": "9°A · Hist", "1": "9°A · Hist", "2": "9°B · Hist", "4": "8°C · Hist", "5": "6°A · Hist", "8": "6°B · Hist"}, "5": {"0": "8°B · Hist", "1": "6°B · Hist", "2": "6°B · Hist", "5": "8°A · Hist", "7": "6°C · Hist", "8": "6°C · Hist"}}, "Eliana Macedo Da Mota Castro": {"1": {"0": "9°A · L. Port.", "1": "9°A · L. Port.", "4": "9°B · O.E.", "5": "9°B · O.E.", "7": "9°B · Eletiva", "8": "9°B · Eletiva"}, "2": {"0": "9°B · L. Port.", "1": "9°B · L. Port.", "2": "6°A · L. Port.", "4": "6°A · L. Port.", "6": "9°A · O.E.", "8": "9°A · O.E."}, "3": {"0": "9°A · L. Port.", "1": "9°A · L. Port.", "2": "6°A · O.E."}, "4": {"0": "9°B · L. Port.", "1": "9°B · L. Port.", "2": "6°A · L. Port.", "4": "6°A · L. Port.", "8": "8°C · O.E."}, "5": {"0": "9°B · Red e Leit.", "1": "9°B · Red e Leit.", "2": "6°A · O.E.", "4": "7°B · Red e Leit.", "5": "7°B · Red e Leit.", "6": "9°A · Red e Leit.", "8": "9°A · Red e Leit."}}, "Erica Barros Bonfim Macedo": {"1": {"0": "9°B · Ing", "1": "9°B · Ing", "2": "7°A · Ing", "4": "8°C · Ing", "5": "8°C · Ing"}, "2": {"0": "7°B · Ing", "1": "7°B · Ing", "7": "6°A · Ing", "8": "6°A · Ing"}, "3": {"0": "6°B · Ing", "1": "6°B · Ing", "4": "8°A · Ing", "5": "8°A · Ing", "6": "9°A · Ing", "8": "9°A · Ing"}, "4": {"0": "6°C · Ing", "1": "6°C · Ing"}, "5": {"2": "7°A · Ing", "6": "8°B · Ing", "8": "8°B · Ing"}}, "Luci Mary Venancio De Andrade Ligasacchi": {"1": {"1": "7°B · Arte", "2": "8°B · Arte", "4": "6°A · Arte", "5": "6°A · Arte"}, "2": {"7": "6°B · Arte", "8": "6°B · Arte"}, "3": {"6": "9°B · P.V.", "8": "9°B · Arte"}, "4": {"0": "7°A · Arte", "1": "7°A · Arte", "2": "9°A · Arte", "4": "7°B · Arte", "5": "6°C · Arte", "6": "8°C · P.V."}, "5": {"0": "8°C · Arte", "1": "8°B · P.V.", "2": "9°A · P.V.", "5": "6°C · Arte", "6": "8°A · Arte", "8": "8°A · P.V."}}, "Silvia Cirlene Pultrini": {"1": {"2": "8°C · O.E.", "4": "9°A · Mat", "5": "9°A · Mat", "7": "9°A · Eletiva", "8": "9°A · Eletiva"}, "2": {"2": "9°A · Mat", "4": "9°B · Mat", "5": "9°B · Mat", "6": "8°A · Ed. Fin.", "8": "8°A · Ed. Fin."}, "3": {"2": "8°A · O.E.", "4": "9°B · O.E.", "5": "9°B · O.E.", "6": "8°B · Ed. Fin.", "8": "8°B · Ed. Fin."}, "4": {"2": "8°B · O.E.", "4": "9°B · Mat", "5": "9°B · Mat", "6": "9°A · O.E.", "8": "9°A · O.E."}, "5": {"0": "9°A · Mat", "1": "9°A · Mat", "2": "9°B · Mat", "4": "8°C · Ed. Fin.", "5": "8°C · Ed. Fin."}}, "Carlos Pereira De Souza": {"1": {"2": "9°A · Ed. Fis", "4": "6°B · Ed. Fis", "5": "6°B · Ed. Fis", "7": "7°A · Eletiva", "8": "7°A · Eletiva"}, "2": {"0": "8°C · Ed. Fis", "1": "6°C · Ed. Fis", "2": "6°C · Ed. Fis", "4": "7°A · Ed. Fis", "5": "7°A · Ed. Fis", "7": "7°B · Ed. Fis", "8": "7°B · Ed. Fis"}, "3": {"0": "8°C · Ed. Fis", "1": "9°B · Ed. Fis", "2": "9°B · Ed. Fis", "4": "9°A · Ed. Fis"}, "4": {"0": "7°B · Tec", "1": "7°B · Tec", "2": "7°A · Tec", "4": "7°A · Tec", "6": "8°B · Ed. Fis", "8": "8°B · Ed. Fis"}, "5": {"1": "8°A · Ed. Fis", "2": "8°A · Ed. Fis", "4": "6°A · Ed. Fis", "5": "6°A · Ed. Fis"}}, "Sandra Maria Generoso": {"1": {"9": "1°A · Mat", "10": "1°A · Mat", "11": "1°B · Ed. Fin.", "12": "1°C · Mat", "13": "1°C · Mat", "15": "1°B · Eletiva", "16": "1°B · Eletiva"}, "2": {"9": "1°B · Mat", "10": "1°B · Mat", "11": "1°C · Mat", "12": "1°C · Mat"}, "3": {"9": "1°C · Ed. Fin.", "11": "1°B · Ed. Fin.", "12": "1°A · Mat", "13": "1°A · Mat", "15": "2°C · Mat", "16": "2°C · Mat"}, "4": {"15": "1°B · Mat", "16": "1°B · Mat"}, "5": {"9": "1°A · Ed. Fin.", "10": "1°A · Ed. Fin.", "11": "1°C · Ed. Fin.", "15": "2°C · Mat", "16": "2°C · Mat"}}, "Ricardo Costa Dobrowisch": {"1": {"9": "1°C · Física", "10": "1°C · Física", "11": "1°A · O.E.", "12": "2°C · Física", "13": "2°C · Física", "15": "3ADM · Física", "16": "3ADM · Física"}, "2": {"9": "3°H · O.E.", "10": "3°H · O.E.", "15": "3°H · Prat. Exp.", "16": "3°H · Prat. Exp."}, "3": {"9": "1°B · Física", "10": "1°B · Física", "11": "2°C · O.E.", "12": "2°ADM · Física", "13": "2°ADM · Física", "15": "1°A · Física", "16": "1°A · Física"}, "4": {"9": "2°C · Ed. Fin.", "10": "2°C · Ed. Fin.", "11": "3°H · Prat. Exp.", "13": "1°C · O.E."}, "5": {"11": "1°B · O.E.", "12": "3°H · Física", "13": "3°H · Física", "15": "2°DES · Física", "16": "2°DES · Física"}}, "Paulo Domingos Da Silva Pereira": {"1": {"9": "2°C · L. Port", "10": "2°C · L. Port", "11": "3°H · Atualidades", "12": "1°A · Red. Leit.", "13": "1°A · Red. Leit."}, "2": {"9": "2°ADM · L. Port", "10": "2°ADM · L. Port", "11": "3°H · Atualidades", "12": "1°B · Red. Leit.", "13": "1°B · Red. Leit.", "15": "2°C · L. Port", "16": "2°C · L. Port"}, "3": {"9": "3ADM · Red. Leit.", "10": "3ADM · Niv.", "11": "2°DES · L. Port", "15": "2°ADM · L. Port", "16": "2°ADM · L. Port"}, "4": {"9": "2°DES · L. Port", "10": "2°DES · L. Port", "12": "3°H · Red. Leit.", "13": "3°H · Red. Leit."}, "5": {"12": "2°C · Red. Leit.", "13": "2°C · Red. Leit.", "15": "1°C · Red. Leit.", "16": "1°C · Red. Leit."}}, "Edson Gomes": {"1": {"9": "3°H · Aprof. Socio", "10": "3°H · Aprof. Socio", "15": "1°C · Eletiva", "16": "1°C · Eletiva"}, "2": {"9": "2°DES · Geo", "10": "2°DES · Geo", "11": "2°ADM · Socio", "12": "2°C · Socio", "13": "2°C · Socio"}, "3": {"9": "2°DES · Socio", "10": "2°DES · Socio", "12": "1°C · Geo", "13": "1°C · Geo", "15": "3°H · Aprof. Geo", "16": "3°H · Aprof. Geo"}, "4": {"9": "1°B · Geo", "10": "1°B · Geo", "12": "2°C · Geo", "13": "2°C · Geo", "15": "1°A · Geo", "16": "1°A · Geo"}, "5": {"9": "2°ADM · Socio", "10": "2°C · lider. e orat.", "11": "2°C · lider. e orat.", "15": "2°ADM · Geo", "16": "2°ADM · Geo"}}, "Jessica Amaral Dos Santos": {"1": {"9": "2°DES · L. Ing", "10": "2°DES · L. Ing", "11": "1°C · O.E.", "12": "1°B · L. Ing", "13": "1°B · L. Ing"}, "2": {"10": "2°C · O.E.", "15": "1°A · L. Ing", "16": "1°A · L. Ing"}, "3": {"9": "3°H · O.E.", "10": "3°H · Niv.", "11": "1°A · O.E.", "12": "2°C · L. Ing", "13": "2°C · L. Ing"}, "4": {"9": "2°ADM · L. Ing", "10": "2°ADM · L. Ing", "15": "1°C · L. Ing", "16": "1°C · L. Ing"}, "5": {"9": "1°B · O.E.", "15": "3°H · L. Ing", "16": "3°H · L. Ing"}}, "Elaine Francisca Rodrigues": {"1": {"9": "3ADM · L. Port", "10": "3ADM · L. Port", "15": "2°C · Eletiva", "16": "2°C · Eletiva"}, "2": {"9": "3ADM · L. Port", "11": "1°B · L. Port", "12": "1°A · L. Port", "13": "1°A · L. Port", "15": "1°C · L. Port", "16": "1°C · L. Port"}, "3": {"10": "3°DES · Niv.", "11": "3ADM · L. Port", "12": "3°H · L. Port", "13": "3°H · L. Port", "15": "3°DES · L. Port", "16": "3°DES · L. Port"}, "4": {"9": "1°C · L. Port", "10": "1°C · L. Port", "12": "1°B · L. Port", "13": "1°B · L. Port", "15": "3°H · L. Port", "16": "3°H · L. Port"}, "5": {"9": "3°DES · L. Port", "10": "3°DES · L. Port", "12": "1°B · L. Port", "15": "1°A · L. Port", "16": "1°A · L. Port"}}, "Cleusa Da Silva Salomao": {"1": {"9": "3°DES · Mat", "10": "3°DES · Mat", "11": "2°ADM · Mat", "12": "3°H · Mat", "13": "3°H · Mat"}, "2": {"10": "3ADM · Niv."}, "3": {"9": "2°ADM · Mat", "10": "2°ADM · Mat", "11": "3°H · Mat", "12": "3ADM · Mat"}, "4": {"9": "3ADM · Mat", "10": "3ADM · Mat", "11": "2°DES · Mat", "12": "2°DES · Mat", "13": "2°ADM · Mat"}, "5": {"9": "2°DES · Mat", "10": "2°DES · Mat", "11": "3°H · Mat", "12": "3°DES · Mat", "13": "3°DES · Mat"}}, "Ysmaylla Karamy De Moura Barbosa": {"1": {"11": "2°C · Bio", "12": "2°ADM · Bio"}, "2": {"11": "2°C · Bio", "12": "2°ADM · Qui", "13": "2°ADM · Qui", "15": "2°DES · Qui", "16": "2°DES · Qui"}, "3": {"11": "2°ADM · Bio", "12": "1°B · Qui", "13": "1°B · Qui", "15": "2°DES · Bio", "16": "2°DES · Bio"}, "4": {"9": "1°A · Qui", "10": "1°A · Qui", "11": "1°C · Qui", "12": "1°C · Qui", "15": "2°C · Qui", "16": "2°C · Qui"}, "5": {"9": "1°C · Bio", "10": "1°C · Bio", "12": "1°A · Bio", "13": "1°A · Bio", "15": "1°B · Bio", "16": "1°B · Bio"}}, "Rodrigo Alves Da Silva": {"1": {"11": "2°DES · Ed. Física", "15": "1°A · Eletiva", "16": "1°A · Eletiva"}, "2": {"9": "1°A · Ed. Física", "10": "1°A · Ed. Física"}, "3": {"10": "1°C · Ed. Física", "11": "1°C · Ed. Física", "13": "3ADM · Ed. Física", "15": "1°B · Ed. Física", "16": "1°B · Ed. Física"}, "4": {"10": "3°H · P.V.", "11": "2°C · P.V."}, "5": {"9": "2°C · Ed. Física", "10": "3°H · Ed. Física", "11": "3°DES · Ed. Física", "13": "2°ADM · Ed. Física"}}, "Angelo Jose Costa": {"1": {"15": "3°H · Eletiva", "16": "3°H · Eletiva"}, "2": {"9": "2°C · Arte e Mid.", "11": "3°DES · P.V.", "13": "1°C · P.V.", "15": "1°B · Arte", "16": "1°B · Arte"}, "3": {"9": "1°A · Arte", "10": "1°A · Arte", "15": "1°C · Arte", "16": "1°C · Arte"}, "4": {"11": "1°A · P.V."}, "5": {"10": "2°ADM · P.V.", "12": "3ADM · P.V.", "13": "1°B · P.V."}}, "Tadeu Silvestre Da Silva": {"1": {"13": "2°ADM · Car. Comp.", "15": "2°ADM · Car. Comp.", "16": "2°ADM · Car. Comp."}, "5": {"9": "3ADM · Gestão F.", "10": "3ADM · Gestão F.", "11": "3ADM · Gestão F."}}, "Ana Paula Dos Santos": {"2": {"0": "8°A · Geo", "1": "8°A · Geo", "2": "7°A · Hist", "4": "9°A · Geo", "5": "9°A · Geo", "6": "8°C · Geo", "8": "8°C · Geo"}, "3": {"0": "9°B · Geo", "2": "9°A · Geo", "4": "8°B · Tec", "5": "8°B · Tec", "7": "7°A · Hist", "8": "7°A · Hist"}, "4": {"0": "8°B · Geo", "1": "8°B · Geo", "2": "7°B · Hist", "5": "8°C · Geo", "6": "8°A · Tec", "8": "8°A · Tec"}, "5": {"0": "8°A · Geo", "1": "7°B · P.V.", "2": "8°B · Geo", "4": "9°B · Geo", "5": "9°B · Geo", "7": "7°B · Hist", "8": "7°B · Hist"}}};
+window.TEACHER_SCHEDULE = {"Gilson Santos Silva":{"1":{"0":"6°A · Red. e Leit.","1":"6°A · Red. e Leit.","4":"6°C · L. Port.","5":"6°C · L. Port.","7":"6°A · Eletiva","8":"6°A · Eletiva"},"2":{"2":"8°B · O.E.","4":"6°B · Red. e Leit.","5":"6°B · Red. e Leit.","7":"6°C · L. Port.","8":"6°C · L. Port."},"3":{"0":"6°C · O.E.","1":"6°C · O.E.","2":"7°B · O.E.","4":"6°B · L. Port.","5":"6°B · L. Port.","8":"8°C · Red. e Leit.","7":"8°C · Red. e Leit."},"4":{"0":"6°B · L. Port.","1":"6°B · L. Port.","2":"8°A · O.E.","7":"7°A · Red. e Leit.","8":"7°A · Red. e Leit."},"5":{"0":"6°C · Red. e Leit.","1":"6°C · Red. e Leit.","4":"6°B · O.E.","5":"6°B · O.E."}},"Andreia Brandao Braga":{"1":{"0":"6°B · Ciências","1":"6°B · Ciências","2":"6°A · Ciências","7":"6°B · Eletiva","8":"6°B · Eletiva"},"2":{"0":"6°A · Ciências","1":"6°A · Ciências","5":"6°C · Ciências","7":"7°A · Ciências","8":"7°A · Ciências"},"3":{"0":"7°B · Ciências","1":"7°B · Ciências","4":"6°C · Tec","5":"6°C · Tec"},"4":{"4":"6°B · Tec","5":"6°B · Tec","7":"6°C · Ciências","8":"6°C · Ciências"},"5":{"0":"6°B · Ciências","1":"7°A · Ciências","2":"7°B · Ciências","7":"6°A · Tec","8":"6°A · Tec"}},"Efigenia Do Rosario Araujo":{"1":{"0":"6°C · Mat","1":"6°C · Mat","2":"6°B · Mat","7":"6°C · Eletiva","8":"6°C · Eletiva"},"2":{"0":"6°B · Mat","1":"6°B · Mat","2":"7°B · O.E.","4":"6°C · Mat","5":"6°A · Mat"},"3":{"0":"6°A · Mat","1":"6°A · Mat","2":"6°B · Mat","4":"7°B · Ed. Fin.","5":"7°B · Ed. Fin.","7":"6°C · Mat","8":"6°C · Mat"},"4":{"0":"6°A · Mat","1":"6°A · Mat","2":"6°C · O.E.","4":"6°C · O.E.","5":"7°A · O.E.","7":"6°B · Mat"},"5":{"0":"6°A · O.E.","1":"6°A · O.E.","4":"7°A · Ed. Fin.","5":"7°A · Ed. Fin.","7":"6°B · O.E.","8":"6°B · O.E."}},"Livia Cristiane Alves Pereira":{"1":{"0":"7°A · L. Port.","1":"7°A · L. Port.","2":"8°A · L. Port.","4":"7°B · L. Port.","5":"7°B · L. Port.","7":"8°A · Eletiva","8":"8°A · Eletiva"},"2":{"0":"8°B · L. Port.","1":"8°B · L. Port.","2":"8°A · L. Port.","4":"8°C · L. Port.","5":"8°C · L. Port."},"3":{"0":"7°A · L. Port.","1":"7°A · L. Port.","8":"8°A · L. Port.","7":"8°A · L. Port."},"4":{"0":"8°A · Red e Leit.","1":"8°A · Red e Leit.","4":"8°B · Red e Leit.","5":"8°B · Red e Leit.","7":"7°B · L. Port.","8":"7°B · L. Port."},"5":{"0":"7°A · O.E.","4":"8°B · L. Port.","5":"8°B · L. Port.","8":"8°C · L. Port.","7":"8°C · L. Port."}},"Santana Alves De Macedo":{"1":{"0":"7°B · Geo","2":"6°C · Geo","4":"7°A · Geo","5":"7°A · Geo","7":"8°C · Eletiva","8":"8°C · Eletiva"},"2":{"0":"6°C · P.V.","1":"7°A · P.V.","2":"6°B · Geo"},"3":{"2":"7°A · Geo","4":"6°A · Geo","5":"6°A · Geo","7":"6°B · Geo","8":"6°B · Geo"},"4":{"2":"6°B · P.V.","5":"7°B · Geo","7":"6°A · P.V.","8":"6°A · Geo"},"5":{"0":"7°B · Geo","2":"6°C · Geo","4":"6°C · Geo"}},"Rita De Cassia Franca":{"1":{"0":"8°A · Mat","1":"8°A · Mat","2":"7°B · Mat","4":"8°B · Mat","5":"8°B · Mat","7":"7°B · Eletiva","8":"7°B · Eletiva"},"2":{"0":"7°A · Mat","1":"8°C · Mat","2":"8°C · Mat","4":"7°B · Mat","5":"7°B · Mat","8":"8°B · Mat","7":"8°B · Mat"},"3":{"0":"8°B · Mat","1":"8°C · Mat","2":"8°C · Mat","4":"7°A · Mat","5":"7°A · Mat","7":"7°B · Mat","8":"7°B · Mat"},"4":{"2":"8°C · Mat","4":"8°A · Mat","5":"8°A · Mat"},"5":{"4":"8°A · Mat","7":"7°A · Mat","8":"7°A · Mat"}},"Wallace Viana Evangelista":{"1":{"0":"8°B · Ciências","1":"8°B · Ciências","4":"8°A · Ciências","5":"8°A · Ciências","7":"8°B · Eletiva","8":"8°B · Eletiva"},"2":{"0":"9°A · Tec","1":"9°A · Tec","4":"8°A · Ciências","5":"8°A · Ciências","8":"9°B · Ciências","7":"9°B · Ciências"},"3":{"1":"8°B · Ciências","2":"8°B · Ciências","4":"8°C · Ciências","5":"8°C · Ciências"},"4":{"0":"8°C · Ciências","1":"8°C · Ciências","4":"9°A · Ciências","5":"9°A · Ciências","8":"9°B · Ciências","7":"9°B · Ciências"},"5":{"1":"8°C · Tec","2":"8°C · Tec","4":"9°A · Ciências","5":"9°A · Ciências","8":"9°B · Tec","7":"9°B · Tec"}},"Helio Da Silva":{"1":{"0":"8°C · Hist","1":"8°C · Hist","2":"9°B · Hist"},"2":{"2":"9°B · Hist","4":"8°B · Hist","5":"8°B · Hist"},"3":{"0":"8°A · Hist","1":"8°A · Hist","2":"6°C · Hist","5":"9°A · Hist","7":"6°A · Hist","8":"6°A · Hist"},"4":{"0":"9°A · Hist","1":"9°A · Hist","2":"9°B · Hist","4":"8°C · Hist","5":"6°A · Hist","8":"6°B · Hist"},"5":{"0":"8°B · Hist","1":"6°B · Hist","2":"6°B · Hist","5":"8°A · Hist","7":"6°C · Hist","8":"6°C · Hist"}},"Eliana Macedo Da Mota Castro":{"1":{"0":"9°A · L. Port.","1":"9°A · L. Port.","4":"9°B · O.E.","5":"9°B · O.E.","7":"9°B · Eletiva","8":"9°B · Eletiva"},"2":{"0":"9°B · L. Port.","1":"9°B · L. Port.","2":"6°A · L. Port.","4":"6°A · L. Port.","8":"9°A · O.E.","7":"9°A · O.E."},"3":{"0":"9°A · L. Port.","1":"9°A · L. Port.","2":"6°A · O.E."},"4":{"0":"9°B · L. Port.","1":"9°B · L. Port.","2":"6°A · L. Port.","4":"6°A · L. Port.","8":"8°C · O.E."},"5":{"0":"9°B · Red e Leit.","1":"9°B · Red e Leit.","2":"6°A · O.E.","4":"7°B · Red e Leit.","5":"7°B · Red e Leit.","8":"9°A · Red e Leit.","7":"9°A · Red e Leit."}},"Erica Barros Bonfim Macedo":{"1":{"0":"9°B · Ing","1":"9°B · Ing","2":"7°A · Ing","4":"8°C · Ing","5":"8°C · Ing"},"2":{"0":"7°B · Ing","1":"7°B · Ing","7":"6°A · Ing","8":"6°A · Ing"},"3":{"0":"6°B · Ing","1":"6°B · Ing","4":"8°A · Ing","5":"8°A · Ing","8":"9°A · Ing","7":"9°A · Ing"},"4":{"0":"6°C · Ing","1":"6°C · Ing"},"5":{"2":"7°A · Ing","8":"8°B · Ing","7":"8°B · Ing"}},"Luci Mary Venancio De Andrade Ligasacchi":{"1":{"1":"7°B · Arte","2":"8°B · Arte","4":"6°A · Arte","5":"6°A · Arte"},"2":{"7":"6°B · Arte","8":"6°B · Arte"},"3":{"8":"9°B · Arte","7":"9°B · P.V."},"4":{"0":"7°A · Arte","1":"7°A · Arte","2":"9°A · Arte","4":"7°B · Arte","5":"6°C · Arte","7":"8°C · P.V."},"5":{"0":"8°C · Arte","1":"8°B · P.V.","2":"9°A · P.V.","5":"6°C · Arte","8":"8°A · P.V.","7":"8°A · Arte"}},"Silvia Cirlene Pultrini":{"1":{"2":"8°C · O.E.","4":"9°A · Mat","5":"9°A · Mat","7":"9°A · Eletiva","8":"9°A · Eletiva"},"2":{"2":"9°A · Mat","4":"9°B · Mat","5":"9°B · Mat","8":"8°A · Ed. Fin.","7":"8°A · Ed. Fin."},"3":{"2":"8°A · O.E.","4":"9°B · O.E.","5":"9°B · O.E.","8":"8°B · Ed. Fin.","7":"8°B · Ed. Fin."},"4":{"2":"8°B · O.E.","4":"9°B · Mat","5":"9°B · Mat","8":"9°A · O.E.","7":"9°A · O.E."},"5":{"0":"9°A · Mat","1":"9°A · Mat","2":"9°B · Mat","4":"8°C · Ed. Fin.","5":"8°C · Ed. Fin."}},"Carlos Pereira De Souza":{"1":{"2":"9°A · Ed. Fis","4":"6°B · Ed. Fis","5":"6°B · Ed. Fis","7":"7°A · Eletiva","8":"7°A · Eletiva"},"2":{"0":"8°C · Ed. Fis","1":"6°C · Ed. Fis","2":"6°C · Ed. Fis","4":"7°A · Ed. Fis","5":"7°A · Ed. Fis","7":"7°B · Ed. Fis","8":"7°B · Ed. Fis"},"3":{"0":"8°C · Ed. Fis","1":"9°B · Ed. Fis","2":"9°B · Ed. Fis","4":"9°A · Ed. Fis"},"4":{"0":"7°B · Tec","1":"7°B · Tec","2":"7°A · Tec","4":"7°A · Tec","8":"8°B · Ed. Fis","7":"8°B · Ed. Fis"},"5":{"1":"8°A · Ed. Fis","2":"8°A · Ed. Fis","4":"6°A · Ed. Fis","5":"6°A · Ed. Fis"}},"Sandra Maria Generoso":{"1":{"9":"1°A · Mat","10":"1°A · Mat","12":"1°B · Ed. Fin.","13":"1°C · Mat","14":"1°C · Mat","16":"1°B · Eletiva","17":"1°B · Eletiva"},"2":{"9":"1°B · Mat","10":"1°B · Mat","12":"1°C · Mat","13":"1°C · Mat"},"3":{"9":"1°C · Ed. Fin.","12":"1°B · Ed. Fin.","13":"1°A · Mat","14":"1°A · Mat","16":"2°C · Mat","17":"2°C · Mat"},"4":{"16":"1°B · Mat","17":"1°B · Mat"},"5":{"9":"1°A · Ed. Fin.","10":"1°A · Ed. Fin.","12":"1°C · Ed. Fin.","16":"2°C · Mat","17":"2°C · Mat"}},"Ricardo Costa Dobrowisch":{"1":{"9":"1°C · Física","10":"1°C · Física","12":"1°A · O.E.","13":"2°C · Física","14":"2°C · Física","16":"3ADM · Física","17":"3ADM · Física"},"2":{"9":"3°H · O.E.","10":"3°H · O.E.","16":"3°H · Prat. Exp.","17":"3°H · Prat. Exp."},"3":{"9":"1°B · Física","10":"1°B · Física","12":"2°C · O.E.","13":"2°ADM · Física","14":"2°ADM · Física","16":"1°A · Física","17":"1°A · Física"},"4":{"9":"2°C · Ed. Fin.","10":"2°C · Ed. Fin.","12":"3°H · Prat. Exp.","14":"1°C · O.E."},"5":{"12":"1°B · O.E.","13":"3°H · Física","14":"3°H · Física","16":"2°DES · Física","17":"2°DES · Física"}},"Paulo Domingos Da Silva Pereira":{"1":{"9":"2°C · L. Port","10":"2°C · L. Port","12":"3°H · Atualidades","13":"1°A · Red. Leit.","14":"1°A · Red. Leit."},"2":{"9":"2°ADM · L. Port","10":"2°ADM · L. Port","12":"3°H · Atualidades","13":"1°B · Red. Leit.","14":"1°B · Red. Leit.","16":"2°C · L. Port","17":"2°C · L. Port"},"3":{"9":"3ADM · Red. Leit.","10":"3ADM · Niv.","12":"2°DES · L. Port","16":"2°ADM · L. Port","17":"2°ADM · L. Port"},"4":{"9":"2°DES · L. Port","10":"2°DES · L. Port","13":"3°H · Red. Leit.","14":"3°H · Red. Leit."},"5":{"13":"2°C · Red. Leit.","14":"2°C · Red. Leit.","16":"1°C · Red. Leit.","17":"1°C · Red. Leit."}},"Edson Gomes":{"1":{"9":"3°H · Aprof. Socio","10":"3°H · Aprof. Socio","16":"1°C · Eletiva","17":"1°C · Eletiva"},"2":{"9":"2°DES · Geo","10":"2°DES · Geo","12":"2°ADM · Socio","13":"2°C · Socio","14":"2°C · Socio"},"3":{"9":"2°DES · Socio","10":"2°DES · Socio","13":"1°C · Geo","14":"1°C · Geo","16":"3°H · Aprof. Geo","17":"3°H · Aprof. Geo"},"4":{"9":"1°B · Geo","10":"1°B · Geo","13":"2°C · Geo","14":"2°C · Geo","16":"1°A · Geo","17":"1°A · Geo"},"5":{"9":"2°ADM · Socio","10":"2°C · lider. e orat.","12":"2°C · lider. e orat.","16":"2°ADM · Geo","17":"2°ADM · Geo"}},"Jessica Amaral Dos Santos":{"1":{"9":"2°DES · L. Ing","10":"2°DES · L. Ing","12":"1°C · O.E.","13":"1°B · L. Ing","14":"1°B · L. Ing"},"2":{"10":"2°C · O.E.","16":"1°A · L. Ing","17":"1°A · L. Ing"},"3":{"9":"3°H · O.E.","10":"3°H · Niv.","12":"1°A · O.E.","13":"2°C · L. Ing","14":"2°C · L. Ing"},"4":{"9":"2°ADM · L. Ing","10":"2°ADM · L. Ing","16":"1°C · L. Ing","17":"1°C · L. Ing"},"5":{"9":"1°B · O.E.","16":"3°H · L. Ing","17":"3°H · L. Ing"}},"Elaine Francisca Rodrigues":{"1":{"9":"3ADM · L. Port","10":"3ADM · L. Port","16":"2°C · Eletiva","17":"2°C · Eletiva"},"2":{"9":"3ADM · L. Port","12":"1°B · L. Port","13":"1°A · L. Port","14":"1°A · L. Port","16":"1°C · L. Port","17":"1°C · L. Port"},"3":{"10":"3°DES · Niv.","12":"3ADM · L. Port","13":"3°H · L. Port","14":"3°H · L. Port","16":"3°DES · L. Port","17":"3°DES · L. Port"},"4":{"9":"1°C · L. Port","10":"1°C · L. Port","13":"1°B · L. Port","14":"1°B · L. Port","16":"3°H · L. Port","17":"3°H · L. Port"},"5":{"9":"3°DES · L. Port","10":"3°DES · L. Port","13":"1°B · L. Port","16":"1°A · L. Port","17":"1°A · L. Port"}},"Cleusa Da Silva Salomao":{"1":{"9":"3°DES · Mat","10":"3°DES · Mat","12":"2°ADM · Mat","13":"3°H · Mat","14":"3°H · Mat"},"2":{"10":"3ADM · Niv."},"3":{"9":"2°ADM · Mat","10":"2°ADM · Mat","12":"3°H · Mat","13":"3ADM · Mat"},"4":{"9":"3ADM · Mat","10":"3ADM · Mat","12":"2°DES · Mat","13":"2°DES · Mat","14":"2°ADM · Mat"},"5":{"9":"2°DES · Mat","10":"2°DES · Mat","12":"3°H · Mat","13":"3°DES · Mat","14":"3°DES · Mat"}},"Ysmaylla Karamy De Moura Barbosa":{"1":{"12":"2°C · Bio","13":"2°ADM · Bio"},"2":{"12":"2°C · Bio","13":"2°ADM · Qui","14":"2°ADM · Qui","16":"2°DES · Qui","17":"2°DES · Qui"},"3":{"12":"2°ADM · Bio","13":"1°B · Qui","14":"1°B · Qui","16":"2°DES · Bio","17":"2°DES · Bio"},"4":{"9":"1°A · Qui","10":"1°A · Qui","12":"1°C · Qui","13":"1°C · Qui","16":"2°C · Qui","17":"2°C · Qui"},"5":{"9":"1°C · Bio","10":"1°C · Bio","13":"1°A · Bio","14":"1°A · Bio","16":"1°B · Bio","17":"1°B · Bio"}},"Rodrigo Alves Da Silva":{"1":{"12":"2°DES · Ed. Física","16":"1°A · Eletiva","17":"1°A · Eletiva"},"2":{"9":"1°A · Ed. Física","10":"1°A · Ed. Física"},"3":{"10":"1°C · Ed. Física","12":"1°C · Ed. Física","14":"3ADM · Ed. Física","16":"1°B · Ed. Física","17":"1°B · Ed. Física"},"4":{"10":"3°H · P.V.","12":"2°C · P.V."},"5":{"9":"2°C · Ed. Física","10":"3°H · Ed. Física","12":"3°DES · Ed. Física","14":"2°ADM · Ed. Física"}},"Angelo Jose Costa":{"1":{"16":"3°H · Eletiva","17":"3°H · Eletiva"},"2":{"9":"2°C · Arte e Mid.","12":"3°DES · P.V.","14":"1°C · P.V.","16":"1°B · Arte","17":"1°B · Arte"},"3":{"9":"1°A · Arte","10":"1°A · Arte","16":"1°C · Arte","17":"1°C · Arte"},"4":{"12":"1°A · P.V."},"5":{"10":"2°ADM · P.V.","13":"3ADM · P.V.","14":"1°B · P.V."}},"Tadeu Silvestre Da Silva":{"1":{"14":"2°ADM · Car. Comp.","16":"2°ADM · Car. Comp.","17":"2°ADM · Car. Comp."},"5":{"9":"3ADM · Gestão F.","10":"3ADM · Gestão F.","12":"3ADM · Gestão F."}},"Ana Paula Dos Santos":{"2":{"0":"8°A · Geo","1":"8°A · Geo","2":"7°A · Hist","4":"9°A · Geo","5":"9°A · Geo","8":"8°C · Geo","7":"8°C · Geo"},"3":{"0":"9°B · Geo","2":"9°A · Geo","4":"8°B · Tec","5":"8°B · Tec","7":"7°A · Hist","8":"7°A · Hist"},"4":{"0":"8°B · Geo","1":"8°B · Geo","2":"7°B · Hist","5":"8°C · Geo","8":"8°A · Tec","7":"8°A · Tec"},"5":{"0":"8°A · Geo","1":"7°B · P.V.","2":"8°B · Geo","4":"9°B · Geo","5":"9°B · Geo","7":"7°B · Hist","8":"7°B · Hist"}}};
 
 // Marca cada célula editável com um id estável: cell_<MES>_<SEMANA>_<LINHA>_<DIA>
 window.assignStableCellIds = function() {
+  const BREAK_RE = /INTERVALO|ALMOÇO|JANTAR/i;
   document.querySelectorAll('.month-panel').forEach(panel => {
     const monthId = (panel.id || '').replace('month-','');
     const weeks = panel.querySelectorAll('.week-block');
     weeks.forEach((wb, wi) => {
       const rows = wb.querySelectorAll('table.agenda-table tbody tr');
       rows.forEach((tr, ri) => {
+        const timeTd = tr.querySelector('td.td-time, td:first-child');
+        const timeLabel = (timeTd && timeTd.textContent) ? timeTd.textContent.trim() : '';
+        const isBreak = BREAK_RE.test(timeLabel);
+        if (isBreak) tr.classList.add('row-break');
+        else tr.classList.remove('row-break');
         const tds = tr.querySelectorAll('td');
         // td[0] = horário; td[1..5] = dias seg..sex
         for (let d = 1; d <= 5; d++) {
@@ -1989,6 +2114,20 @@ window.assignStableCellIds = function() {
             ed.dataset.week  = String(wi);
             ed.dataset.row   = String(ri);
             ed.dataset.day   = String(d-1); // 0..4  (seg..sex)
+            ed.dataset.slot  = timeLabel;
+            if (isBreak) {
+              ed.dataset.break = '1';
+              ed.classList.add('break-cell');
+              // limpa aula residual em linha de intervalo/almoço/jantar
+              const txt = (ed.innerText || '').trim();
+              if (txt && /\s[·•]\s/.test(txt)) {
+                ed.innerText = '';
+                ed.classList.remove('fixed-aula','replicated-aula');
+              }
+            } else {
+              delete ed.dataset.break;
+              ed.classList.remove('break-cell');
+            }
           }
         }
       });
@@ -2004,6 +2143,8 @@ window.applyFixedSchedule = function(teacherName, opts) {
   if (!sched) return 0;
   let count = 0;
   document.querySelectorAll('.ed-cell[contenteditable="true"][data-idx]').forEach(ed => {
+    // Nunca grava aula em INTERVALO / ALMOÇO / JANTAR
+    if (ed.dataset.break === '1') return;
     const day = parseInt(ed.dataset.day, 10);   // 0..4
     const row = parseInt(ed.dataset.row, 10);
     const wd  = String(day + 1);                // 1..5
