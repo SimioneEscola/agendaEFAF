@@ -314,6 +314,9 @@ tr.row-break td.td-time, tr.row-break .td-time-dark{opacity:.95}
     <span class="cloud-status cs-idle" id="cloudStatus">☁️ Firebase</span>
     <span class="replicate-actions"><button class="btn-rep" type="button" onclick="replicarSemana()" title="Replicar a última célula clicada em todas as semanas do mês atual (mesmo dia da semana e horário)">🔁 Replicar Semana</button><button class="btn-rep" type="button" onclick="replicarMes()" title="Replicar a última célula clicada em todos os meses (mesmo dia da semana e horário)">🔁 Replicar Mês</button><button class="btn-rep btn-rep-restore" type="button" onclick="restaurarHorarioFixo()" title="Reaplicar o horário fixo de aulas do professor (sobrescreve as células de aula)">↺ Horário Fixo</button><button class="btn-rep" type="button" onclick="fixarCalendarioDiretor()" title="Insere/atualiza na agenda os eventos do calendário do diretor (1º semestre já registrado + 2º semestre conforme o Calendário PEI 2026 anexo)">📅 Fixar Calendário</button></span>
     <button class="btn btn-save" onclick="cloudSave(this)">☁️ Salvar</button>
+    <button class="btn-rep" type="button" onclick="exportarBackupPC()" title="Baixa um arquivo JSON com todos os dados da agenda deste professor (cópia de segurança no computador)">💾 Backup PC</button>
+    <button class="btn-rep" type="button" onclick="document.getElementById('backupFileInput').click()" title="Carrega um backup JSON salvo no computador e restaura na agenda (também envia ao Supabase)">📂 Restaurar Backup</button>
+    <input type="file" id="backupFileInput" accept="application/json,.json" style="display:none" onchange="importarBackupPC(this)">
   </div>
 </div>
 
@@ -1996,6 +1999,128 @@ window.cloudSave = async function(btn) {
 };
 
 window.saveAll = function(btn) { window.cloudSave(btn); };
+
+/* ── BACKUP LOCAL (PC) ─────────────────────────────────────────── */
+window.buildAgendaBackup = function() {
+  if (typeof window.assignStableCellIds === 'function') window.assignStableCellIds();
+  const professor = window.viewingUser || window.currentUser || 'sem_nome';
+  const cells = window.getData ? window.getData() : {};
+  // inclui também metadados de planos se existirem em memória
+  let planos = [];
+  try {
+    if (typeof PLANOS !== 'undefined' && Array.isArray(PLANOS)) planos = PLANOS;
+    else if (window.PLANOS && Array.isArray(window.PLANOS)) planos = window.PLANOS;
+  } catch (_) {}
+  return {
+    formato: 'agenda-simioni-backup-v1',
+    escola: 'EE Prof. Luiz Simioni Sobrinho',
+    professor: professor,
+    exportadoEm: new Date().toISOString(),
+    totalCelulas: Object.keys(cells).filter(k => (cells[k]||'').toString().trim()).length,
+    cells: cells,
+    planos: planos
+  };
+};
+
+window.exportarBackupPC = function() {
+  const user = window.viewingUser || window.currentUser;
+  if (!user) { alert('Faça login primeiro.'); return; }
+  try {
+    const backup = window.buildAgendaBackup();
+    const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const safe = String(user).replace(/[^\wÀ-ú]+/g, '_').replace(/^_|_$/g, '');
+    const d = new Date();
+    const stamp = d.toISOString().slice(0,10) + '_' + String(d.getHours()).padStart(2,'0') + String(d.getMinutes()).padStart(2,'0');
+    a.href = url;
+    a.download = 'backup_agenda_' + safe + '_' + stamp + '.json';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+    if (window.drToast) window.drToast('Backup baixado: ' + a.download + ' (' + backup.totalCelulas + ' células).');
+    else alert('Backup salvo no computador:\\n' + a.download + '\\n' + backup.totalCelulas + ' células preenchidas.');
+  } catch (e) {
+    console.error(e);
+    alert('Erro ao gerar backup: ' + (e.message || e));
+  }
+};
+
+window.importarBackupPC = async function(input) {
+  const file = input && input.files && input.files[0];
+  if (!file) return;
+  // permite escolher o mesmo arquivo de novo depois
+  const resetInput = () => { try { input.value = ''; } catch(_){} };
+  const user = window.viewingUser || window.currentUser;
+  if (!user) {
+    alert('Faça login antes de restaurar um backup.');
+    resetInput();
+    return;
+  }
+  try {
+    const text = await file.text();
+    const data = JSON.parse(text);
+    if (!data || typeof data !== 'object') throw new Error('Arquivo inválido.');
+    const cells = data.cells || data.dados || data;
+    if (!cells || typeof cells !== 'object' || Array.isArray(cells)) {
+      throw new Error('JSON sem o campo "cells". Use um backup gerado por esta agenda.');
+    }
+    const n = Object.keys(cells).filter(k => (cells[k]||'').toString().trim()).length;
+    const de = data.professor ? ('\\nProfessor do backup: ' + data.professor) : '';
+    const quando = data.exportadoEm ? ('\\nExportado em: ' + data.exportadoEm) : '';
+    if (!confirm('Restaurar backup neste login (' + user + ')?' + de + quando + '\\n\\n' + n + ' células serão aplicadas na grade e enviadas ao Supabase.\\n\\nContinuar?')) {
+      resetInput();
+      return;
+    }
+    if (typeof window.assignStableCellIds === 'function') window.assignStableCellIds();
+    if (window.applyData) window.applyData(cells);
+    // planos opcionais
+    if (Array.isArray(data.planos) && data.planos.length) {
+      try {
+        if (typeof PLANOS !== 'undefined') {
+          PLANOS = data.planos;
+          if (typeof saveToStore === 'function') await saveToStore();
+        }
+      } catch (_) {}
+    }
+    // grava no Supabase
+    if (window.fbSave) {
+      window.__agendaLoadDone = true; // permite limpeza normal após restore intencional
+      await window.fbSave(null, user);
+    }
+    if (window.drToast) window.drToast('Backup restaurado: ' + n + ' células. Dados enviados à nuvem.');
+    else alert('Backup restaurado com sucesso.\\n' + n + ' células aplicadas e salvas no Supabase.');
+  } catch (e) {
+    console.error(e);
+    alert('Erro ao restaurar backup:\\n' + (e.message || e));
+  }
+  resetInput();
+};
+
+/** Gera backup automático no PC após salvar na nuvem com sucesso (opcional, 1x por sessão se >50 células) */
+window.__lastAutoBackupAt = 0;
+window.autoBackupAposSalvar = function() {
+  try {
+    const now = Date.now();
+    if (now - (window.__lastAutoBackupAt || 0) < 10 * 60 * 1000) return; // no máx. 1 a cada 10 min
+    const backup = window.buildAgendaBackup();
+    if (!backup.totalCelulas || backup.totalCelulas < 20) return;
+    window.__lastAutoBackupAt = now;
+    const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const safe = String(backup.professor).replace(/[^\wÀ-ú]+/g, '_').replace(/^_|_$/g, '');
+    a.href = url;
+    a.download = 'auto_backup_agenda_' + safe + '_' + new Date().toISOString().slice(0,10) + '.json';
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+  } catch (e) { console.warn('autoBackup', e); }
+};
+
 window.addEventListener('load', () => {
   window.setStatus('idle');
   // Ativa primeiro mês
