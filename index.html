@@ -1652,8 +1652,7 @@ table.dtable tr:hover td{background:#f6faff}
 // ══════════════════════════════════════════════════════════════════
 //  SUPABASE — Agenda EE Prof. Luiz Simioni Sobrinho 2026
 //  Tabela: public.agenda
-//  Colunas esperadas: id, professor, cell_key, conteudo, updated_at
-//  UNIQUE (professor, cell_key)  +  RLS liberado para anon
+//  Salvamento SEGURO: upsert (nunca apaga tudo antes de gravar)
 // ══════════════════════════════════════════════════════════════════
 import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm";
 
@@ -1662,21 +1661,44 @@ const SUPABASE_ANON_KEY = "sb_publishable_V50P1LM4skolasnrCC-vmQ_z2ZWyKax";
 const TABLE = "agenda";
 
 const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-  auth: { persistSession: false, autoRefreshToken: false }
+  auth: { persistSession: false, autoRefreshToken: false },
+  db: { schema: "public" }
 });
 window.supabase = sb;
 window.fbDb = sb;
 window.fbRef = (_db, path) => path;
 
+/** Flag: impede auto-save enquanto carrega do servidor */
+window.__agendaLoading = false;
+window.__agendaLoadDone = false;
+
+async function fetchAllRows(professor) {
+  // Pagina de 1000 em 1000 (limite padrão do PostgREST)
+  const pageSize = 1000;
+  let from = 0;
+  const all = [];
+  while (true) {
+    const { data, error } = await sb
+      .from(TABLE)
+      .select("cell_key, conteudo")
+      .eq("professor", professor)
+      .range(from, from + pageSize - 1);
+    if (error) throw error;
+    if (!data || !data.length) break;
+    all.push(...data);
+    if (data.length < pageSize) break;
+    from += pageSize;
+  }
+  return all;
+}
+
 async function loadCellsMap(professor) {
-  const { data, error } = await sb
-    .from(TABLE)
-    .select("cell_key, conteudo")
-    .eq("professor", professor)
-    .neq("cell_key", "__planos__");
-  if (error) throw error;
+  const rows = await fetchAllRows(professor);
   const map = {};
-  (data || []).forEach(r => { if (r.cell_key) map[r.cell_key] = r.conteudo ?? ""; });
+  rows.forEach(r => {
+    if (!r.cell_key || r.cell_key === "__planos__") return;
+    map[r.cell_key] = r.conteudo ?? "";
+  });
   return map;
 }
 
@@ -1701,9 +1723,7 @@ window.fbGet = async (path) => {
       map = await loadCellsMap(professor);
       if (!Object.keys(map).length) {
         const withSpaces = professor.replace(/_/g, " ");
-        if (withSpaces !== professor) {
-          map = await loadCellsMap(withSpaces);
-        }
+        if (withSpaces !== professor) map = await loadCellsMap(withSpaces);
       }
     } catch (e) { console.error("fbGet agendas", e); }
     return { exists: () => Object.keys(map).length > 0, val: () => map };
@@ -1711,42 +1731,80 @@ window.fbGet = async (path) => {
   return { exists: () => false, val: () => null };
 };
 
-/** Salva todas as células preenchidas do professor na tabela agenda */
+/**
+ * SALVAR SEGURO
+ * - Usa UPSERT por (professor, cell_key) — NÃO apaga a base inteira antes
+ * - Só remove chaves que existiam no servidor e agora estão vazias na grade
+ * - Bloqueia gravação se a grade parece "vazia demais" vs o que há no servidor
+ *   (protege contra wipe acidental após falha de load)
+ */
 window.fbSave = async function(btn, userName) {
+  if (window.__agendaLoading) {
+    console.warn("[agenda] save ignorado: ainda carregando");
+    return;
+  }
   if (btn) { btn.textContent = "⏳..."; btn.disabled = true; }
   if (window.setStatus) window.setStatus("saving");
   try {
     if (!userName) throw new Error("Sem professor logado");
+    if (typeof window.assignStableCellIds === "function") window.assignStableCellIds();
+
     const data = window.getData ? window.getData() : {};
     const now = new Date().toISOString();
-    const rows = [];
+    const filled = {};
     for (const [key, val] of Object.entries(data || {})) {
       if (val == null) continue;
       const text = String(val).trim();
       if (!text) continue;
       if (key === "__planos__") continue;
-      rows.push({
-        professor: userName,
-        cell_key: key,
-        conteudo: text,
-        updated_at: now
-      });
+      // ignora índices instáveis legados
+      if (/^cell_\d+$/.test(key)) continue;
+      filled[key] = text;
+    }
+    const filledKeys = Object.keys(filled);
+
+    // Lê o que já existe no servidor
+    let existing = [];
+    try { existing = await fetchAllRows(userName); } catch (_) {}
+    const existingMap = {};
+    existing.forEach(r => { if (r.cell_key && r.cell_key !== "__planos__") existingMap[r.cell_key] = r.conteudo ?? ""; });
+    const existingCount = Object.keys(existingMap).length;
+
+    // Proteção anti-wipe: se o servidor tem muitas células e a grade veio quase vazia, NÃO grava
+    if (existingCount >= 30 && filledKeys.length < Math.max(5, Math.floor(existingCount * 0.15))) {
+      console.error("[agenda] bloqueado wipe acidental", { existingCount, filledKeys: filledKeys.length });
+      if (window.setStatus) window.setStatus("error");
+      if (btn) { btn.textContent = "⚠️ Bloqueado"; btn.disabled = false; setTimeout(() => { btn.innerHTML = "☁️ Salvar"; }, 3000); }
+      alert("Salvamento bloqueado por segurança:\\nA grade local tem muito menos dados (" + filledKeys.length + ") do que o servidor (" + existingCount + ").\\n\\nRecarregue a página (F5), espere carregar e tente de novo.\\nSe o problema continuar, avise a gestão.");
+      return;
     }
 
-    // 1) apaga células antigas deste professor (exceto __planos__)
-    const { error: delErr } = await sb
-      .from(TABLE)
-      .delete()
-      .eq("professor", userName)
-      .neq("cell_key", "__planos__");
-    if (delErr) throw delErr;
+    // Upsert só do que está preenchido
+    const rows = filledKeys.map(key => ({
+      professor: userName,
+      cell_key: key,
+      conteudo: filled[key],
+      updated_at: now
+    }));
 
-    // 2) insere as preenchidas (em lotes de 500)
     if (rows.length) {
-      for (let i = 0; i < rows.length; i += 500) {
-        const chunk = rows.slice(i, i + 500);
-        const { error } = await sb.from(TABLE).insert(chunk);
+      for (let i = 0; i < rows.length; i += 400) {
+        const chunk = rows.slice(i, i + 400);
+        const { error } = await sb.from(TABLE).upsert(chunk, { onConflict: "professor,cell_key" });
         if (error) throw error;
+      }
+    }
+
+    // Remove no servidor apenas chaves que o usuário esvaziou de propósito
+    // (existiam, agora não estão em filled, e a grade já terminou de carregar)
+    if (window.__agendaLoadDone) {
+      const stale = Object.keys(existingMap).filter(k => !(k in filled));
+      // não apaga em massa se parecer wipe
+      if (stale.length && stale.length < Math.max(50, existingCount * 0.5)) {
+        for (let i = 0; i < stale.length; i += 200) {
+          const chunk = stale.slice(i, i + 200);
+          await sb.from(TABLE).delete().eq("professor", userName).in("cell_key", chunk);
+        }
       }
     }
 
@@ -1764,45 +1822,52 @@ window.fbSave = async function(btn, userName) {
       btn.disabled = false;
       setTimeout(() => { btn.innerHTML = "☁️ Salvar"; }, 3000);
     }
-    alert("Erro ao salvar no Supabase:\\n" + (e.message || e.details || JSON.stringify(e)));
+    alert("Erro ao salvar no Supabase:\\n" + (e.message || e.details || e.hint || JSON.stringify(e)));
   }
 };
 
 /** Carrega células do professor e aplica na grade */
 window.fbLoad = async function(userName) {
+  window.__agendaLoading = true;
+  window.__agendaLoadDone = false;
   if (window.setStatus) window.setStatus("loading");
   try {
     if (!userName) {
       if (window.setStatus) window.setStatus("empty");
       return;
     }
+    // Garante IDs estáveis ANTES de aplicar
+    if (typeof window.assignStableCellIds === "function") window.assignStableCellIds();
+
     const map = await loadCellsMap(userName);
-    if (Object.keys(map).length) {
+    const n = Object.keys(map).length;
+    if (n) {
       if (window.applyData) window.applyData(map);
       if (window.setStatus) window.setStatus("loaded");
+      console.info("[agenda] carregadas", n, "células de", userName);
     } else {
       if (window.setStatus) window.setStatus("empty");
     }
   } catch (e) {
     console.error("Supabase load error:", e);
     if (window.setStatus) window.setStatus(navigator.onLine ? "error" : "offline");
+  } finally {
+    window.__agendaLoading = false;
+    window.__agendaLoadDone = true;
   }
 };
 
-/** Planos de aula — guardados na mesma tabela com cell_key = __planos__ */
+/** Planos de aula — mesma tabela, cell_key = __planos__ */
 window.sbSavePlanos = async function(professor, planos) {
   try {
     const now = new Date().toISOString();
-    await sb.from(TABLE).delete().eq("professor", professor).eq("cell_key", "__planos__");
-    if (planos && planos.length) {
-      const { error } = await sb.from(TABLE).insert({
-        professor,
-        cell_key: "__planos__",
-        conteudo: JSON.stringify(planos),
-        updated_at: now
-      });
-      if (error) throw error;
-    }
+    const { error } = await sb.from(TABLE).upsert({
+      professor,
+      cell_key: "__planos__",
+      conteudo: JSON.stringify(planos || []),
+      updated_at: now
+    }, { onConflict: "professor,cell_key" });
+    if (error) throw error;
     return { error: null };
   } catch (e) {
     console.error("sbSavePlanos", e);
@@ -1850,23 +1915,28 @@ window.getData = function() {
     if (el.tagName === 'INPUT') d[el.dataset.eid] = el.value;
     else d[el.dataset.eid] = el.innerText.trim();
   });
-  document.querySelectorAll('[contenteditable="true"]:not([data-eid])').forEach((el, idx) => {
-    if (!el.dataset.idx) el.dataset.idx = 'cell_' + idx;
+  // Só grava células com ID estável (c_MES_wN_rN_dN). Nunca inventa cell_0, cell_1...
+  document.querySelectorAll('[contenteditable="true"]:not([data-eid])').forEach(el => {
+    if (!el.dataset.idx || !el.dataset.idx.startsWith('c_')) return;
+    if (el.dataset.break === '1') return; // intervalo/almoço/jantar
     d[el.dataset.idx] = el.innerText.trim();
   });
   return d;
 };
 
 window.applyData = function(s) {
+  if (!s) return;
+  if (typeof window.assignStableCellIds === 'function') window.assignStableCellIds();
   document.querySelectorAll('[data-eid]').forEach(el => {
     const v = s[el.dataset.eid];
     if (v == null) return;
     if (el.tagName === 'INPUT') el.value = v;
     else if (v) el.innerText = v;
   });
-  document.querySelectorAll('[contenteditable="true"]:not([data-eid])').forEach((el, idx) => {
-    const key = el.dataset.idx || ('cell_' + idx);
-    if (s[key]) el.innerText = s[key];
+  document.querySelectorAll('[contenteditable="true"]:not([data-eid])').forEach(el => {
+    const key = el.dataset.idx;
+    if (!key) return;
+    if (s[key] != null && s[key] !== '') el.innerText = s[key];
   });
 };
 
@@ -1874,7 +1944,7 @@ window.setStatus = function(state) {
   const el = document.getElementById('cloudStatus');
   if (!el) return;
   const m = {
-    idle:    ['☁️ Firebase','cs-idle'],
+    idle:    ['☁️ Supabase','cs-idle'],
     saving:  ['⏳ Salvando...','cs-saving'],
     saved:   ['✅ Salvo','cs-saved'],
     loading: ['⏳ Carregando...','cs-saving'],
@@ -1891,9 +1961,13 @@ window.setStatus = function(state) {
 
 let _timer;
 window.scheduleAutoSave = function() {
+  if (window.__agendaLoading) return;
   window.setStatus('dirty');
   clearTimeout(_timer);
-  _timer = setTimeout(() => window.cloudSave(null), 2000);
+  _timer = setTimeout(() => {
+    if (window.__agendaLoading) return;
+    window.cloudSave(null);
+  }, 2500);
 };
 
 let _ht;
