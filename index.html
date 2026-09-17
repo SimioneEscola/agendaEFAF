@@ -2302,7 +2302,10 @@ function doLogout() {
 }
 
 function clearAgendaFields() {
-  document.querySelectorAll('[contenteditable="true"]').forEach(el => el.innerText = '');
+  // Não limpa os rótulos de horário (.ed-label) — eles são texto estrutural
+  // da grade, não dado do professor; devem continuar visíveis ao trocar de
+  // usuário mesmo que ninguém os tenha editado.
+  document.querySelectorAll('[contenteditable="true"]:not(.ed-label)').forEach(el => el.innerText = '');
   document.querySelectorAll('input[data-eid]').forEach(el => el.value = '');
 }
 
@@ -2310,7 +2313,22 @@ async function loadUserData(name) {
   if (window.fbLoad) {
     await window.fbLoad(name);
   } else {
-    document.addEventListener('firebaseReady', () => window.fbLoad(name), { once: true });
+    await new Promise(resolve => {
+      document.addEventListener('firebaseReady', async () => {
+        await window.fbLoad(name);
+        resolve();
+      }, { once: true });
+    });
+  }
+  // Mostra o horário fixo do professor como referência (ver applyFixedSchedule).
+  // Feito aqui — e não tentando "empacotar" window.fbLoad no carregamento do
+  // script — porque o cliente do Supabase é um <script type="module">, que só
+  // termina de carregar DEPOIS dos scripts normais da página. Um wrapper
+  // definido num script normal nunca conseguiria enxergar o fbLoad de verdade
+  // a tempo. loadUserData só roda quando o professor efetivamente loga (ou o
+  // gestor troca de professor), momento em que tudo já carregou.
+  if (window.TEACHER_SCHEDULE && window.TEACHER_SCHEDULE[name] && window.applyFixedSchedule) {
+    window.applyFixedSchedule(name);
   }
 }
 
@@ -2534,18 +2552,6 @@ window.restaurarHorarioFixo = function() {
   if (!u) { window.drToast('Faça login primeiro.'); return; }
   window.drToast('O horário fixo já é exibido automaticamente — não é mais preciso restaurá-lo manualmente.');
 };
-
-// Re-aplica horário fixo logo após carregar os dados salvos (preenche o que
-// estiver vazio, apenas como referência visual — ver applyFixedSchedule).
-const _origFbLoad = window.fbLoad;
-if (_origFbLoad) {
-  window.fbLoad = async function(userName) {
-    await _origFbLoad(userName);
-    if (window.TEACHER_SCHEDULE[userName]) {
-      window.applyFixedSchedule(userName);
-    }
-  };
-}
 
 // Inicializa IDs estáveis assim que o DOM estiver pronto.
 if (document.readyState === 'loading') {
